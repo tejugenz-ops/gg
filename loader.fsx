@@ -2089,7 +2089,6 @@ module WinFormsShell =
         form.BackColor <- Color.FromArgb(245, 246, 248)
         form.ShowInTaskbar <- false
         form.Opacity <- 0.0
-        form.WindowState <- FormWindowState.Minimized
 
         let header = new Panel(Dock = DockStyle.Top, Height = 84, BackColor = Color.FromArgb(25, 31, 43))
         let title = new Label(Text = "COLDCLICKER", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 18.0f), AutoSize = true, Location = Point(24, 16))
@@ -2582,23 +2581,26 @@ module WinFormsShell =
         monitor.Start()
 
         let mutable wasRShiftDown = false
-        let hotkey = new System.Windows.Forms.Timer(Interval = 40)
-        hotkey.Tick.Add(fun _ ->
-            if not form.IsDisposed then
-                let isDown = (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s
-                if isDown && not wasRShiftDown then
-                    if form.Visible then
-                        form.Hide()
-                        form.WindowState <- FormWindowState.Minimized
-                        form.ShowInTaskbar <- false
-                    else
-                        form.WindowState <- FormWindowState.Normal
-                        form.Opacity <- 1.0
-                        form.ShowInTaskbar <- false
-                        form.Show()
-                        form.Activate()
-                wasRShiftDown <- isDown)
-        hotkey.Start()
+        let mutable hotkeyRunning = true
+        let hotkeyThread = new Thread(fun () ->
+            while hotkeyRunning && not form.IsDisposed do
+                try
+                    let isDown = (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s
+                    if isDown && not wasRShiftDown && not form.IsDisposed && form.IsHandleCreated then
+                        form.BeginInvoke(Action(fun () ->
+                            if not form.IsDisposed then
+                                if form.Visible then
+                                    form.Hide()
+                                else
+                                    form.Opacity <- 1.0
+                                    form.Show()
+                                    form.Activate())) |> ignore
+                    wasRShiftDown <- isDown
+                with _ -> ()
+                Thread.Sleep(40))
+        hotkeyThread.IsBackground <- true
+        hotkeyThread.Name <- "ColdClicker hotkey poller"
+        hotkeyThread.Start()
 
         form.FormClosing.Add(fun args ->
             if ipcSession.IsSome && not closeAfterShutdown then
@@ -2608,8 +2610,7 @@ module WinFormsShell =
                 operation |> Option.iter (fun value -> value.Cancel())
                 monitor.Stop()
                 monitor.Dispose()
-                hotkey.Stop()
-                hotkey.Dispose()
+                hotkeyRunning <- false
                 disposeSession()
                 disposeTargets targets
                 targets <- [])
