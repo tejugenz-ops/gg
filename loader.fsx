@@ -1672,7 +1672,7 @@ module ManualMap =
     let private ModNameOffset = 48
 
     [<Literal>]
-    let private JvmCtxMagic = 0x54584443u
+    let private JvmCtxMagic = 0x544D564Au
 
     [<Literal>]
     let private JvmCtxVersion = 1u
