@@ -2060,6 +2060,8 @@ module WinFormsShell =
         [<DllImport("user32.dll")>]
         extern int16 GetAsyncKeyState(int virtualKey)
 
+    let private VK_CONTROL = 0x11
+    let private VK_SHIFT = 0x10
     let private VK_INSERT = 0x2D
 
     type private CandidateItem(target: TargetDiscovery.Target) =
@@ -2579,15 +2581,18 @@ module WinFormsShell =
             | _ -> ())
         monitor.Start()
 
-        let wasComboDown = ref false
+        let armed = ref true
         let mutable hotkeyRunning = true
         let comboDown () =
+            (ShellNative.GetAsyncKeyState(VK_CONTROL) &&& 0x8000s) <> 0s &&
+            (ShellNative.GetAsyncKeyState(VK_SHIFT) &&& 0x8000s) <> 0s &&
             (ShellNative.GetAsyncKeyState(VK_INSERT) &&& 0x8000s) <> 0s
         let hotkeyThread = new Thread(fun () ->
             while hotkeyRunning && not form.IsDisposed do
                 try
                     let isDown = comboDown ()
-                    if isDown && not !wasComboDown && not form.IsDisposed && form.IsHandleCreated then
+                    if isDown && !armed && not form.IsDisposed && form.IsHandleCreated then
+                        armed := false
                         form.BeginInvoke(Action(fun () ->
                             if not form.IsDisposed then
                                 if form.Visible then
@@ -2595,9 +2600,10 @@ module WinFormsShell =
                                 else
                                     form.Show()
                                     form.Activate())) |> ignore
-                    wasComboDown := isDown
+                    if not isDown then
+                        armed := true
                 with _ -> ()
-                Thread.Sleep(40))
+                Thread.Sleep(25))
         hotkeyThread.IsBackground <- true
         hotkeyThread.Name <- "ColdClicker hotkey poller"
         hotkeyThread.Start()
