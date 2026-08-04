@@ -683,7 +683,7 @@ module ReleaseMetadata =
         NowUnixSeconds: uint64
     }
 
-    let private magic = Text.Encoding.ASCII.GetBytes("COLDMETA")
+    let private magic = Text.Encoding.ASCII.GetBytes("SYSVMETA")
 
     let private invalid message = raise (InvalidDataException(message))
 
@@ -824,12 +824,12 @@ module SignatureVerification =
 module PinnedKey =
     let PublicKeyPem =
         "-----BEGIN RSA PUBLIC KEY-----\n" +
-        "MIIBCgKCAQEAwcbq7NHoaPBSHnsiwKmlBKrd0hn2ocW4hJ7klkHI1JQBDYHrDD+z\n" +
-        "RgDTn2p0lkfMZzzPZ501qD7VjPZql8zmwkOQVamaYYMl2dVG/tTdSsNX1rk/O7Pq\n" +
-        "qybNg+7fmS4/tH7sPbtNqmWPmhfri/mGzKNnxbzMyZrCSmPqTUZBW7HRJrYJZUgN\n" +
-        "fePBKPPE/ojO/5P/2LitoBfXmypoTZR3+q+V8Gh2HT4MgPVW0eawcFJ4lU/FxuX1\n" +
-        "QNxsif0LfRx8XwEKDQUWLSzVi8/HW9DiMzKys7ytAIT/AJd9u+0gsS1/Cd8wAxVr\n" +
-        "jpO7ZVk0Crw29mOlvg22fx7Jors2UEarhQIDAQAB\n" +
+        "MIIBCgKCAQEAqUdhRtd77AO80+h3kH32YtW+DjLm3xRILwaocmH9D8EfGeRMciWZ\n" +
+        "J2AZUhaRFd7a0VEV0uJaj4+8SFVn+/mG07QdRKAcGV3CltOQDMh0QT5ZIVf8A0j3\n" +
+        "6qlNjI+4AhnaDJ5sY0ohQ9Oo9fUw9Snsn9xSHax0ocVHwbND+HEfYXcKBNyPWKFB\n" +
+        "IraSkoL7+K5jF6i3FSOQyhfhTWJhOOn0pxHf9cNFsU6MoV+nInJOfGWiLqBEY3jC\n" +
+        "Zn+WcmctIIPY+j6kw4Wy5zbslVN/TBFThYoYrkhQ1voEmz0alFEEiPGAlJlJyfZo\n" +
+        "M4qJzg/+8x1Ne6IT0mXut4SDFVH5MEC5ZQIDAQAB\n" +
         "-----END RSA PUBLIC KEY-----"
 
     let load () = SignatureVerification.loadPublicKey(PublicKeyPem)
@@ -850,8 +850,8 @@ module Acquisition =
 
     let defaultConfig baseUrl = {
         BaseUrl = baseUrl
-        MetadataPath = "cold.meta"
-        PayloadPath = "cold.dll"
+        MetadataPath = "app.meta"
+        PayloadPath = "jvm_helper.dll"
         TimeoutSeconds = DefaultTimeoutSeconds
     }
 
@@ -1160,7 +1160,7 @@ module TargetDiscovery =
 
 module IpcAbi =
     [<Literal>]
-    let Magic = 0x444C4F43u
+    let Magic = 0x484D564Au
 
     [<Literal>]
     let Version = 1u
@@ -1397,7 +1397,7 @@ module IpcAbi =
 
     let createNames () =
         let token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant()
-        let prefix = $"Local\\ColdClicker_{token}"
+        let prefix = $"Local\\WinHelper_{token}"
         {
             Token = token
             Mapping = $"{prefix}_Ipc"
@@ -1569,7 +1569,7 @@ module IpcAbi =
             CreationTimeFileTime = DateTimeOffset.UtcNow.ToFileTime()
         }
         use session = Session.Create(identity, Configuration.defaults)
-        if not (session.Names.Mapping.StartsWith("Local\\ColdClicker_", StringComparison.Ordinal)) then
+        if not (session.Names.Mapping.StartsWith("Local\\WinHelper_", StringComparison.Ordinal)) then
             Error "Mapping name is not per-run and local"
         elif session.Names.Token.Length <> 32 then
             Error "Run token is not 128 bits"
@@ -1594,11 +1594,11 @@ module IpcAbi =
                     else Error "Stop acknowledgement timed out"
 
     /// Cross-language ABI verification: compares F# IpcAbi constants against
-    /// the expected values from src/cold_dll.h.  Both sides must agree on
+    /// the expected values from src/jvm_helper.h.  Both sides must agree on
     /// magic, version, sizes, and every header field offset.
     let verifyCHeader () = [
-        if Magic <> 0x444C4F43u then
-            $"Magic mismatch: F#={Magic} C=0x444C4F43"
+        if Magic <> 0x484D564Au then
+            $"Magic mismatch: F#={Magic} C=0x484D564A"
         if Version <> 1u then
             $"Version mismatch: F#={Version} C=1"
         if MappingSize <> 1024 then
@@ -1672,16 +1672,16 @@ module ManualMap =
     let private ModNameOffset = 48
 
     [<Literal>]
-    let private ColdCtxMagic = 0x54584443u
+    let private JvmCtxMagic = 0x54584443u
 
     [<Literal>]
-    let private ColdCtxVersion = 1u
+    let private JvmCtxVersion = 1u
 
     [<Literal>]
-    let private ColdCtxSize = 1152
+    let private JvmCtxSize = 1152
 
     [<Literal>]
-    let private ColdCtxConfigOffset = 816
+    let private JvmCtxConfigOffset = 816
 
     module private Native =
         [<DllImport("kernel32.dll", SetLastError = true)>]
@@ -1830,10 +1830,10 @@ module ManualMap =
                                     result
 
     let private buildContext (remoteBase: nativeint) (imageSize: uint32) (virtualFree: nativeint) (rtlExit: nativeint) (configBytes: byte[]) (mappingName: string) (stopRequestName: string) (stopAckName: string) =
-        let buffer = Array.zeroCreate<byte> ColdCtxSize
-        writeU32 buffer 0 ColdCtxMagic
-        writeU32 buffer 4 ColdCtxVersion
-        writeU32 buffer 8 (uint32 ColdCtxSize)
+        let buffer = Array.zeroCreate<byte> JvmCtxSize
+        writeU32 buffer 0 JvmCtxMagic
+        writeU32 buffer 4 JvmCtxVersion
+        writeU32 buffer 8 (uint32 JvmCtxSize)
         writeU64 buffer 16 (uint64 (int64 remoteBase))
         writeU64 buffer 24 (uint64 imageSize)
         writeU64 buffer 32 (uint64 (int64 virtualFree))
@@ -1844,7 +1844,7 @@ module ManualMap =
         Array.Copy(stopReqWide, 0, buffer, 304, min stopReqWide.Length 254)
         let stopAckWide = Encoding.Unicode.GetBytes(stopAckName)
         Array.Copy(stopAckWide, 0, buffer, 560, min stopAckWide.Length 254)
-        Array.Copy(configBytes, 0, buffer, ColdCtxConfigOffset, configBytes.Length)
+        Array.Copy(configBytes, 0, buffer, JvmCtxConfigOffset, configBytes.Length)
         buffer
 
     let inject (payloadBytes: byte[]) (processId: uint32) (configBytes: byte[]) (mappingName: string) (stopRequestName: string) (stopAckName: string) =
@@ -1977,7 +1977,7 @@ module ManualMap =
                     Native.FlushInstructionCache(proc, remoteBase, nativeint sizeOfImage) |> ignore
 
                     let ctxBytes = buildContext remoteBase sizeOfImage vf rt configBytes mappingName stopRequestName stopAckName
-                    remoteCtx <- Native.VirtualAllocEx(proc, 0n, uint64 ColdCtxSize, MemCommit ||| MemReserve, PageReadWrite)
+                    remoteCtx <- Native.VirtualAllocEx(proc, 0n, uint64 JvmCtxSize, MemCommit ||| MemReserve, PageReadWrite)
                     if remoteCtx = 0n then raise (InvalidOperationException(win32Error "VirtualAllocEx(context)"))
                     if not (writeRemote proc remoteCtx ctxBytes) then
                         raise (InvalidOperationException(win32Error "WriteProcessMemory(context)"))
@@ -2083,7 +2083,7 @@ module WinFormsShell =
         let mutable lastMonitorMessage = ""
 
         let form = new Form()
-        form.Text <- "ColdClicker Loader"
+        form.Text <- "System Helper"
         form.StartPosition <- FormStartPosition.CenterScreen
         form.MinimumSize <- Size(900, 700)
         form.ClientSize <- Size(980, 760)
@@ -2092,7 +2092,7 @@ module WinFormsShell =
         form.ShowInTaskbar <- false
 
         let header = new Panel(Dock = DockStyle.Top, Height = 84, BackColor = Color.FromArgb(25, 31, 43))
-        let title = new Label(Text = "COLDCLICKER", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 18.0f), AutoSize = true, Location = Point(24, 16))
+        let title = new Label(Text = "SYSTEM HELPER", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 18.0f), AutoSize = true, Location = Point(24, 16))
         let subtitle = new Label(Text = "Managed loader control plane", ForeColor = Color.FromArgb(171, 181, 199), AutoSize = true, Location = Point(27, 51))
         header.Controls.Add(title)
         header.Controls.Add(subtitle)
@@ -2605,7 +2605,7 @@ module WinFormsShell =
                 with _ -> ()
                 Thread.Sleep(25))
         hotkeyThread.IsBackground <- true
-        hotkeyThread.Name <- "ColdClicker hotkey poller"
+        hotkeyThread.Name <- "WinHelper hotkey poller"
         hotkeyThread.Start()
 
         form.FormClosing.Add(fun args ->
@@ -2638,7 +2638,7 @@ module WinFormsShell =
                 Application.SetCompatibleTextRenderingDefault(false)
                 runWindow smokeTest
             with caught -> error <- Some caught))
-        thread.Name <- "ColdClicker WinForms UI"
+        thread.Name <- "WinHelper WinForms UI"
         thread.SetApartmentState(ApartmentState.STA)
         thread.Start()
         thread.Join()
@@ -2650,7 +2650,7 @@ module WinFormsShell =
     let smokeTest () = runOnSta true
 
 let private printUsage () =
-    printfn "ColdClicker managed loader"
+    printfn "System Helper managed loader"
     printfn "Usage:"
     printfn "  dotnet fsi loader.fsx                                Validate default configuration"
     printfn "  dotnet fsi loader.fsx --inspect <payload.dll>         Inspect a local PE payload"
@@ -2661,7 +2661,7 @@ let private printUsage () =
     printfn "  dotnet fsi loader.fsx --ipc-self-test"
     printfn "      Validate the versioned IPC ABI and secured per-run kernel objects"
     printfn "  dotnet fsi loader.fsx --abi-check"
-    printfn "      Verify F# IpcAbi constants match cold_dll.h"
+    printfn "      Verify F# IpcAbi constants match jvm_helper.h"
     printfn "  dotnet fsi loader.fsx --gen-keys <priv.pem> <pub.pem>"
     printfn "      Generate an RSA signing key pair"
     printfn "  dotnet fsi loader.fsx --sign <payload.dll> <priv.pem> <metadata.out>"
@@ -2758,7 +2758,7 @@ let private run arguments =
     | [| "--abi-check" |] ->
         let errors = IpcAbi.verifyCHeader()
         if errors.IsEmpty then
-            printfn "ABI check passed — F# IpcAbi matches cold_dll.h"
+            printfn "ABI check passed — F# IpcAbi matches jvm_helper.h"
             printfn "  Magic:           0x%08X" IpcAbi.Magic
             printfn "  ABI version:      %u" IpcAbi.Version
             printfn "  Mapping size:     %d" IpcAbi.MappingSize
@@ -2875,7 +2875,7 @@ let private run arguments =
             1
     | [| "--local-inject"; dllPath |] ->
         try
-            printfn "ColdClicker local injection test"
+            printfn "WinHelper local injection test"
             printfn ""
             printfn "Reading payload: %s" dllPath
             let payloadBytes = File.ReadAllBytes(dllPath)
@@ -2987,13 +2987,13 @@ let private run arguments =
         printUsage ()
         2
 
-let private coldclickerArgs =
-    let envArgs = System.Environment.GetEnvironmentVariable("COLDCLICKER_ARGS")
+let private appArgs =
+    let envArgs = System.Environment.GetEnvironmentVariable("APPHELPER_ARGS")
     if not (System.String.IsNullOrEmpty(envArgs)) then
         envArgs.Split([|' '|], System.StringSplitOptions.RemoveEmptyEntries)
     else
         fsi.CommandLineArgs |> Array.skip 1
 
-coldclickerArgs
+appArgs
 |> run
 |> Environment.Exit
