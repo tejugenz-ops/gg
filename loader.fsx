@@ -2089,7 +2089,6 @@ module WinFormsShell =
         form.ClientSize <- Size(980, 760)
         form.Font <- new Font("Segoe UI", 9.0f)
         form.BackColor <- Color.FromArgb(245, 246, 248)
-        form.ShowInTaskbar <- false
 
         let header = new Panel(Dock = DockStyle.Top, Height = 84, BackColor = Color.FromArgb(25, 31, 43))
         let title = new Label(Text = "SYSTEM HELPER", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 18.0f), AutoSize = true, Location = Point(24, 16))
@@ -2599,6 +2598,7 @@ module WinFormsShell =
                                     form.Hide()
                                 else
                                     form.Show()
+                                    form.BringToFront()
                                     form.Activate())) |> ignore
                     if not isDown then
                         armed := true
@@ -2621,7 +2621,10 @@ module WinFormsShell =
                 disposeTargets targets
                 targets <- [])
 
-        form.Shown.Add(fun _ -> discoverTargets())
+        form.Shown.Add(fun _ ->
+            form.BringToFront()
+            form.Activate()
+            discoverTargets())
 
         if smokeTest then
             form.CreateControl() |> ignore
