@@ -2060,11 +2060,7 @@ module WinFormsShell =
         [<DllImport("user32.dll")>]
         extern int16 GetAsyncKeyState(int virtualKey)
 
-    let private VK_CONTROL = 0x11
-    let private VK_RSHIFT = 0xA1
-    let private VK_OEM_4 = 0xDB
-    let private VK_OEM_6 = 0xDD
-    let private VK_OEM_PERIOD = 0xBE
+    let private VK_INSERT = 0x2D
 
     type private CandidateItem(target: TargetDiscovery.Target) =
         member _.Target = target
@@ -2586,11 +2582,7 @@ module WinFormsShell =
         let wasComboDown = ref false
         let mutable hotkeyRunning = true
         let comboDown () =
-            (ShellNative.GetAsyncKeyState(VK_CONTROL) &&& 0x8000s) <> 0s &&
-            (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s &&
-            (ShellNative.GetAsyncKeyState(VK_OEM_4) &&& 0x8000s) <> 0s &&
-            (ShellNative.GetAsyncKeyState(VK_OEM_6) &&& 0x8000s) <> 0s &&
-            (ShellNative.GetAsyncKeyState(VK_OEM_PERIOD) &&& 0x8000s) <> 0s
+            (ShellNative.GetAsyncKeyState(VK_INSERT) &&& 0x8000s) <> 0s
         let hotkeyThread = new Thread(fun () ->
             while hotkeyRunning && not form.IsDisposed do
                 try
