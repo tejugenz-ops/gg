@@ -2145,7 +2145,7 @@ module WinFormsShell =
         payloadLayout.RowStyles.Add(RowStyle(SizeType.Percent, 50.0f)) |> ignore
         payloadLayout.RowStyles.Add(RowStyle(SizeType.Percent, 50.0f)) |> ignore
         let endpointLabel = new Label(Text = "Base URL", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft)
-        let endpointBox = new TextBox(Dock = DockStyle.Fill, PlaceholderText = "https://server.example/releases/current")
+        let endpointBox = new TextBox(Dock = DockStyle.Fill, Text = "https://github.com/tejugenz-ops/gg/releases/download/v1")
         let keyLabel = new Label(Text = "Public key", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft)
         let keyBox = new TextBox(Dock = DockStyle.Fill, ReadOnly = true, Text = "Pinned key (embedded)")
         let browseButton = new Button(Text = "Browse...", Dock = DockStyle.Fill, Enabled = false)
