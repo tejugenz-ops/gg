@@ -2088,7 +2088,6 @@ module WinFormsShell =
         form.Font <- new Font("Segoe UI", 9.0f)
         form.BackColor <- Color.FromArgb(245, 246, 248)
         form.ShowInTaskbar <- false
-        form.Opacity <- 0.0
 
         let header = new Panel(Dock = DockStyle.Top, Height = 84, BackColor = Color.FromArgb(25, 31, 43))
         let title = new Label(Text = "COLDCLICKER", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 18.0f), AutoSize = true, Location = Point(24, 16))
@@ -2580,22 +2579,21 @@ module WinFormsShell =
             | _ -> ())
         monitor.Start()
 
-        let mutable wasRShiftDown = false
+        let wasRShiftDown = ref false
         let mutable hotkeyRunning = true
         let hotkeyThread = new Thread(fun () ->
             while hotkeyRunning && not form.IsDisposed do
                 try
                     let isDown = (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s
-                    if isDown && not wasRShiftDown && not form.IsDisposed && form.IsHandleCreated then
+                    if isDown && not !wasRShiftDown && not form.IsDisposed && form.IsHandleCreated then
                         form.BeginInvoke(Action(fun () ->
                             if not form.IsDisposed then
                                 if form.Visible then
                                     form.Hide()
                                 else
-                                    form.Opacity <- 1.0
                                     form.Show()
                                     form.Activate())) |> ignore
-                    wasRShiftDown <- isDown
+                    wasRShiftDown := isDown
                 with _ -> ()
                 Thread.Sleep(40))
         hotkeyThread.IsBackground <- true
@@ -2615,10 +2613,7 @@ module WinFormsShell =
                 disposeTargets targets
                 targets <- [])
 
-        form.Shown.Add(fun _ ->
-            form.Hide()
-            form.Opacity <- 1.0
-            discoverTargets())
+        form.Shown.Add(fun _ -> discoverTargets())
 
         if smokeTest then
             form.CreateControl() |> ignore
