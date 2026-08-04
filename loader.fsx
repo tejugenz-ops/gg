@@ -1,33 +1,5 @@
-#r "System.Net.Http.dll"
-
-// Auto-resolve Windows Desktop runtime path for WinForms (portable across machines)
-let private coldclickerRefsFile = "coldclicker_refs.fsx"
-let private winDesktopBase = @"C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App"
-let private winDesktopDir =
-    if System.IO.Directory.Exists(winDesktopBase) then
-        System.IO.Directory.GetDirectories(winDesktopBase)
-        |> Array.choose (fun d ->
-            try Some(System.Version(System.IO.Path.GetFileName(d)), d)
-            with _ -> None)
-        |> Array.sortByDescending fst
-        |> Array.map snd
-        |> Array.tryHead
-    else None
-
-match winDesktopDir with
-| Some dir ->
-    System.IO.File.WriteAllText(coldclickerRefsFile,
-        "#I @\"" + dir + "\"\n" +
-        "#r \"System.Drawing.Common.dll\"\n" +
-        "#r \"System.Windows.Forms.Primitives.dll\"\n" +
-        "#r \"System.Windows.Forms.dll\"\n")
-| None -> ()
-
-#load "coldclicker_refs.fsx"
-
 open System
 open System.Buffers.Binary
-open System.Drawing
 open System.IO
 open System.Net.Http
 open System.Numerics
@@ -37,6 +9,7 @@ open System.Security.Principal
 open System.Text
 open System.Threading
 open System.Threading.Tasks
+open System.Drawing
 open System.Windows.Forms
 open Microsoft.Win32.SafeHandles
 
@@ -3003,7 +2976,13 @@ let private run arguments =
         printUsage ()
         2
 
-fsi.CommandLineArgs
-|> Array.skip 1
+let private coldclickerArgs =
+    let envArgs = System.Environment.GetEnvironmentVariable("COLDCLICKER_ARGS")
+    if not (System.String.IsNullOrEmpty(envArgs)) then
+        envArgs.Split([|' '|], System.StringSplitOptions.RemoveEmptyEntries)
+    else
+        fsi.CommandLineArgs |> Array.skip 1
+
+coldclickerArgs
 |> run
 |> Environment.Exit
