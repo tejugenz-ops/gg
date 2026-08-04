@@ -2056,6 +2056,12 @@ let private printRelease (metadata: ReleaseMetadata.Metadata) (image: Pe.Image) 
     printfn "  Sections:         %d" image.Sections.Length
 
 module WinFormsShell =
+    module private ShellNative =
+        [<DllImport("user32.dll")>]
+        extern int16 GetAsyncKeyState(int virtualKey)
+
+    let private VK_RSHIFT = 0xA1
+
     type private CandidateItem(target: TargetDiscovery.Target) =
         member _.Target = target
         override _.ToString() =
@@ -2081,6 +2087,9 @@ module WinFormsShell =
         form.ClientSize <- Size(980, 760)
         form.Font <- new Font("Segoe UI", 9.0f)
         form.BackColor <- Color.FromArgb(245, 246, 248)
+        form.ShowInTaskbar <- false
+        form.Opacity <- 0.0
+        form.WindowState <- FormWindowState.Minimized
 
         let header = new Panel(Dock = DockStyle.Top, Height = 84, BackColor = Color.FromArgb(25, 31, 43))
         let title = new Label(Text = "COLDCLICKER", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 18.0f), AutoSize = true, Location = Point(24, 16))
@@ -2088,9 +2097,8 @@ module WinFormsShell =
         header.Controls.Add(title)
         header.Controls.Add(subtitle)
 
-        let content = new TableLayoutPanel(Dock = DockStyle.Fill, Padding = System.Windows.Forms.Padding(24, 20, 24, 18), ColumnCount = 1, RowCount = 5)
+        let content = new TableLayoutPanel(Dock = DockStyle.Fill, Padding = System.Windows.Forms.Padding(24, 20, 24, 18), ColumnCount = 1, RowCount = 4)
         content.RowStyles.Add(RowStyle(SizeType.Absolute, 106.0f)) |> ignore
-        content.RowStyles.Add(RowStyle(SizeType.Absolute, 104.0f)) |> ignore
         content.RowStyles.Add(RowStyle(SizeType.Absolute, 48.0f)) |> ignore
         content.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
         content.RowStyles.Add(RowStyle(SizeType.Absolute, 46.0f)) |> ignore
@@ -2109,26 +2117,6 @@ module WinFormsShell =
         targetLayout.Controls.Add(targetDetails, 0, 1)
         targetLayout.SetColumnSpan(targetDetails, 2)
         targetGroup.Controls.Add(targetLayout)
-
-        let payloadGroup = new GroupBox(Text = "Signed payload release", Dock = DockStyle.Fill, Padding = System.Windows.Forms.Padding(14, 12, 14, 12))
-        let payloadLayout = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2)
-        payloadLayout.ColumnStyles.Add(ColumnStyle(SizeType.Absolute, 92.0f)) |> ignore
-        payloadLayout.ColumnStyles.Add(ColumnStyle(SizeType.Percent, 100.0f)) |> ignore
-        payloadLayout.ColumnStyles.Add(ColumnStyle(SizeType.Absolute, 86.0f)) |> ignore
-        payloadLayout.RowStyles.Add(RowStyle(SizeType.Percent, 50.0f)) |> ignore
-        payloadLayout.RowStyles.Add(RowStyle(SizeType.Percent, 50.0f)) |> ignore
-        let endpointLabel = new Label(Text = "Base URL", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft)
-        let endpointBox = new TextBox(Dock = DockStyle.Fill, Text = "https://github.com/tejugenz-ops/gg/releases/download/v1")
-        let keyLabel = new Label(Text = "Public key", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft)
-        let keyBox = new TextBox(Dock = DockStyle.Fill, ReadOnly = true, Text = "Pinned key (embedded)")
-        let browseButton = new Button(Text = "Browse...", Dock = DockStyle.Fill, Enabled = false)
-        payloadLayout.Controls.Add(endpointLabel, 0, 0)
-        payloadLayout.Controls.Add(endpointBox, 1, 0)
-        payloadLayout.SetColumnSpan(endpointBox, 2)
-        payloadLayout.Controls.Add(keyLabel, 0, 1)
-        payloadLayout.Controls.Add(keyBox, 1, 1)
-        payloadLayout.Controls.Add(browseButton, 2, 1)
-        payloadGroup.Controls.Add(payloadLayout)
 
         let actions = new FlowLayoutPanel(Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false)
         let verifyButton = new Button(Text = "Verify release", Width = 130, Height = 32, BackColor = Color.FromArgb(43, 91, 171), ForeColor = Color.White, FlatStyle = FlatStyle.Flat)
@@ -2242,10 +2230,9 @@ module WinFormsShell =
         footer.Resize.Add(fun _ -> sdkLabel.Location <- Point(footer.ClientSize.Width - sdkLabel.Width, 12))
 
         content.Controls.Add(targetGroup, 0, 0)
-        content.Controls.Add(payloadGroup, 0, 1)
-        content.Controls.Add(actions, 0, 2)
-        content.Controls.Add(tabs, 0, 3)
-        content.Controls.Add(footer, 0, 4)
+        content.Controls.Add(actions, 0, 1)
+        content.Controls.Add(tabs, 0, 2)
+        content.Controls.Add(footer, 0, 3)
         form.Controls.Add(content)
         form.Controls.Add(header)
 
@@ -2261,9 +2248,6 @@ module WinFormsShell =
             let runtimeActive = ipcSession.IsSome
             refreshButton.Enabled <- not busy && not runtimeActive
             verifyButton.Enabled <- not busy && not runtimeActive
-            browseButton.Enabled <- not busy
-            endpointBox.Enabled <- not busy
-            keyBox.Enabled <- not busy
             targetBox.Enabled <- not busy
             cancelButton.Enabled <- busy
             stopButton.Enabled <- not busy && runtimeActive
@@ -2476,19 +2460,18 @@ module WinFormsShell =
             | :? TextBox as box -> box.TextChanged.Add(fun _ -> updateValidation())
             | _ -> ())
 
+        let releaseEndpoint = "https://github.com/tejugenz-ops/gg/releases/download/v1"
+
         verifyButton.Click.Add(fun _ ->
             match validateSelectedTarget() with
             | Error message -> failOperation message
-            | Ok selectedTarget when String.IsNullOrWhiteSpace(endpointBox.Text) -> failOperation "Enter the HTTPS release base URL"
-            | Ok selectedTarget when not (Uri.IsWellFormedUriString(endpointBox.Text.Trim(), UriKind.Absolute)) -> failOperation "Release base URL is invalid"
-            | Ok selectedTarget when not (endpointBox.Text.Trim().StartsWith("https://", StringComparison.OrdinalIgnoreCase)) -> failOperation "Release base URL must use HTTPS"
             | Ok selectedTarget ->
                 if state.TryTransition(LoaderState.DownloadingPayload) then
                     stateLabel.Text <- LoaderState.describe LoaderState.DownloadingPayload
                     setBusy true
                     let cancellation = new CancellationTokenSource()
                     operation <- Some cancellation
-                    let endpoint = endpointBox.Text.Trim()
+                    let endpoint = releaseEndpoint
                     appendActivity $"Downloading signed release from {endpoint}"
                     Task.Run((fun () ->
                         let initialErrors = TargetDiscovery.revalidate selectedTarget
@@ -2598,6 +2581,25 @@ module WinFormsShell =
             | _ -> ())
         monitor.Start()
 
+        let mutable wasRShiftDown = false
+        let hotkey = new System.Windows.Forms.Timer(Interval = 40)
+        hotkey.Tick.Add(fun _ ->
+            if not form.IsDisposed then
+                let isDown = (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s
+                if isDown && not wasRShiftDown then
+                    if form.Visible then
+                        form.Hide()
+                        form.WindowState <- FormWindowState.Minimized
+                        form.ShowInTaskbar <- false
+                    else
+                        form.WindowState <- FormWindowState.Normal
+                        form.Opacity <- 1.0
+                        form.ShowInTaskbar <- false
+                        form.Show()
+                        form.Activate()
+                wasRShiftDown <- isDown)
+        hotkey.Start()
+
         form.FormClosing.Add(fun args ->
             if ipcSession.IsSome && not closeAfterShutdown then
                 args.Cancel <- true
@@ -2606,11 +2608,16 @@ module WinFormsShell =
                 operation |> Option.iter (fun value -> value.Cancel())
                 monitor.Stop()
                 monitor.Dispose()
+                hotkey.Stop()
+                hotkey.Dispose()
                 disposeSession()
                 disposeTargets targets
                 targets <- [])
 
-        form.Shown.Add(fun _ -> discoverTargets())
+        form.Shown.Add(fun _ ->
+            form.Hide()
+            form.Opacity <- 1.0
+            discoverTargets())
 
         if smokeTest then
             form.CreateControl() |> ignore
