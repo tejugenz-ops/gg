@@ -1,3 +1,9 @@
+#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\System.Windows.Forms.dll"
+#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\System.Windows.Forms.Primitives.dll"
+#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\System.Drawing.Common.dll"
+#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\Microsoft.Win32.SystemEvents.dll"
+#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\Accessibility.dll"
+
 open System
 open System.Buffers.Binary
 open System.IO
@@ -1698,10 +1704,10 @@ module ManualMap =
         extern SafeWaitHandle CreateRemoteThread(SafeProcessHandle proc, nativeint attributes, uint32 stackSize, nativeint startAddress, nativeint parameter, uint32 flags, uint32& threadId)
 
         [<DllImport("kernel32.dll", SetLastError = true)>]
-        extern bool GetThreadContext(SafeWaitHandle thread, byte[] context)
+        extern bool GetThreadContext(SafeWaitHandle thread, nativeint context)
 
         [<DllImport("kernel32.dll", SetLastError = true)>]
-        extern bool SetThreadContext(SafeWaitHandle thread, byte[] context)
+        extern bool SetThreadContext(SafeWaitHandle thread, nativeint context)
 
         [<DllImport("kernel32.dll", SetLastError = true)>]
         extern uint32 ResumeThread(SafeWaitHandle thread)
@@ -2011,20 +2017,28 @@ module ManualMap =
                     (* Redirect RCX from RtlExitUserThread to the DLL entry.
                      * RtlUserThreadStart calls the function in RCX with the
                      * parameter in RDX (which is already remoteCtx). *)
-                    let ctx = Array.zeroCreate<byte> 1232
-                    writeU32 ctx 0x30 0x100007u  (* ContextFlags = CONTEXT_AMD64 | CONTEXT_FULL *)
-                    let mutable ctxOk = false
-                    let mutable tries = 0
-                    while not ctxOk && tries < 10 do
-                        ctxOk <- Native.GetThreadContext(thread, ctx)
-                        if not ctxOk then Thread.Sleep(10)
-                        tries <- tries + 1
-                    if not ctxOk then
-                        raise (InvalidOperationException(win32Error "GetThreadContext"))
-                    writeU64 ctx 0x80 (uint64 (int64 entryAddr))  (* RCX = DLL entry *)
-                    if not (Native.SetThreadContext(thread, ctx)) then
-                        raise (InvalidOperationException(win32Error "SetThreadContext"))
-                    Native.ResumeThread(thread) |> ignore
+                    (* AMD64 CONTEXT requires 16-byte alignment — a managed
+                     * byte[] is NOT guaranteed 16-byte aligned on the GC
+                     * heap, which causes GetThreadContext to fail with
+                     * error 998.  Use AllocHGlobal + manual alignment. *)
+                    let ctxRaw = Marshal.AllocHGlobal(1232 + 16)
+                    try
+                        let ctxAligned = ((ctxRaw + 15n) &&& ~~~15n)
+                        Marshal.WriteInt32(ctxAligned + 0x30n, 0x100007)
+                        let mutable ctxOk = false
+                        let mutable tries = 0
+                        while not ctxOk && tries < 10 do
+                            ctxOk <- Native.GetThreadContext(thread, ctxAligned)
+                            if not ctxOk then Thread.Sleep(10)
+                            tries <- tries + 1
+                        if not ctxOk then
+                            raise (InvalidOperationException(win32Error "GetThreadContext"))
+                        Marshal.WriteInt64(ctxAligned + 0x80n, int64 entryAddr)
+                        if not (Native.SetThreadContext(thread, ctxAligned)) then
+                            raise (InvalidOperationException(win32Error "SetThreadContext"))
+                        Native.ResumeThread(thread) |> ignore
+                    finally
+                        Marshal.FreeHGlobal(ctxRaw)
                     thread.Dispose()
                     Thread.Sleep(500)
                     Ok remoteBase
@@ -2120,90 +2134,126 @@ module WinFormsShell =
         let mutable closeAfterShutdown = false
         let mutable lastMonitorMessage = ""
 
+        (* ---- Nexus palette ---- *)
+        let cBg        = Color.FromArgb(39, 39, 42)
+        let cPanel     = Color.FromArgb(45, 45, 49)
+        let cCard      = Color.FromArgb(53, 53, 58)
+        let cCardHov   = Color.FromArgb(61, 61, 66)
+        let cBorder    = Color.FromArgb(69, 69, 74)
+        let cAccent    = Color.FromArgb(72, 196, 150)
+        let cAccentHov = Color.FromArgb(91, 214, 168)
+        let cText      = Color.FromArgb(246, 246, 247)
+        let cTextDim   = Color.FromArgb(180, 180, 184)
+        let cTextMut   = Color.FromArgb(125, 125, 132)
+        let cGreen     = cAccent
+        let cRed       = Color.FromArgb(242, 105, 105)
+
+        let fontBrand  = new Font("Segoe UI Semibold", 10.0f)
+        let fontTitle  = new Font("Segoe UI Semibold", 12.0f)
+        let fontBody   = new Font("Segoe UI", 9.0f)
+        let fontBodyS  = new Font("Segoe UI", 8.5f)
+
         let form = new Form()
         form.Text <- "System Helper"
         form.StartPosition <- FormStartPosition.CenterScreen
-        form.MinimumSize <- Size(900, 700)
-        form.ClientSize <- Size(980, 760)
-        form.Font <- new Font("Segoe UI", 9.0f)
-        form.BackColor <- Color.FromArgb(245, 246, 248)
+        form.MinimumSize <- Size(760, 520)
+        form.ClientSize <- Size(1024, 640)
+        form.Font <- fontBody
+        form.BackColor <- cBg
+        form.ForeColor <- cText
+        form.FormBorderStyle <- FormBorderStyle.Sizable
+        form.MaximizeBox <- true
 
-        let header = new Panel(Dock = DockStyle.Top, Height = 84, BackColor = Color.FromArgb(25, 31, 43))
-        let title = new Label(Text = "SYSTEM HELPER", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 18.0f), AutoSize = true, Location = Point(24, 16))
-        let subtitle = new Label(Text = "Managed loader control plane", ForeColor = Color.FromArgb(171, 181, 199), AutoSize = true, Location = Point(27, 51))
+        (* ---- Header ---- *)
+        let header = new Panel(Dock = DockStyle.Top, Height = 44, BackColor = cBg)
+        header.Padding <- System.Windows.Forms.Padding(20, 0, 20, 0)
+        let title = new Label(Text = "NEXUS", Font = fontBrand, ForeColor = cText, AutoSize = true, Location = Point(20, 14))
+        let subtitle = new Label(Text = "SYSTEM HELPER", Font = fontBodyS, ForeColor = cTextMut, AutoSize = true, Location = Point(88, 15))
+        let headerLine = new Panel(Dock = DockStyle.Bottom, Height = 1, BackColor = cBorder)
         header.Controls.Add(title)
         header.Controls.Add(subtitle)
+        header.Controls.Add(headerLine)
 
-        let content = new TableLayoutPanel(Dock = DockStyle.Fill, Padding = System.Windows.Forms.Padding(24, 20, 24, 18), ColumnCount = 1, RowCount = 4)
-        content.RowStyles.Add(RowStyle(SizeType.Absolute, 106.0f)) |> ignore
-        content.RowStyles.Add(RowStyle(SizeType.Absolute, 48.0f)) |> ignore
-        content.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
+        (* ---- Content ---- *)
+        let content = new TableLayoutPanel(Dock = DockStyle.Fill, BackColor = cBg, Padding = System.Windows.Forms.Padding(16, 10, 16, 10), ColumnCount = 1, RowCount = 4)
+        content.RowStyles.Add(RowStyle(SizeType.Absolute, 58.0f)) |> ignore
         content.RowStyles.Add(RowStyle(SizeType.Absolute, 46.0f)) |> ignore
+        content.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
+        content.RowStyles.Add(RowStyle(SizeType.Absolute, 36.0f)) |> ignore
 
-        let targetGroup = new GroupBox(Text = "Minecraft target", Dock = DockStyle.Fill, Padding = System.Windows.Forms.Padding(14, 12, 14, 12))
-        let targetLayout = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2)
-        targetLayout.ColumnStyles.Add(ColumnStyle(SizeType.Percent, 100.0f)) |> ignore
-        targetLayout.ColumnStyles.Add(ColumnStyle(SizeType.Absolute, 118.0f)) |> ignore
-        targetLayout.RowStyles.Add(RowStyle(SizeType.Absolute, 34.0f)) |> ignore
-        targetLayout.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
-        let targetBox = new ComboBox(Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList)
-        let refreshButton = new Button(Text = "Refresh targets", Dock = DockStyle.Fill)
-        let targetDetails = new Label(Text = "No target selected", Dock = DockStyle.Fill, ForeColor = Color.DimGray, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft)
-        targetLayout.Controls.Add(targetBox, 0, 0)
-        targetLayout.Controls.Add(refreshButton, 1, 0)
-        targetLayout.Controls.Add(targetDetails, 0, 1)
-        targetLayout.SetColumnSpan(targetDetails, 2)
-        targetGroup.Controls.Add(targetLayout)
+        (* ---- Target info card ---- *)
+        let targetCard = new Panel(Dock = DockStyle.Fill, BackColor = cPanel, Padding = System.Windows.Forms.Padding(16, 9, 16, 9))
+        let targetLabel = new Label(Text = "HOME", Font = fontTitle, ForeColor = cText, AutoSize = true, Location = Point(16, 9))
+        let targetDetails = new Label(Text = "Scanning for Minecraft...", Font = fontBodyS, ForeColor = cTextMut, AutoEllipsis = true, Location = Point(16, 31), Anchor = (AnchorStyles.Left ||| AnchorStyles.Right ||| AnchorStyles.Top), Width = 700)
+        targetCard.Controls.Add(targetLabel)
+        targetCard.Controls.Add(targetDetails)
 
-        let actions = new FlowLayoutPanel(Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false)
-        let verifyButton = new Button(Text = "Verify release", Width = 130, Height = 32, BackColor = Color.FromArgb(43, 91, 171), ForeColor = Color.White, FlatStyle = FlatStyle.Flat)
-        verifyButton.FlatAppearance.BorderSize <- 0
-        let cancelButton = new Button(Text = "Cancel", Width = 94, Height = 32, Enabled = false)
-        let stopButton = new Button(Text = "Stop runtime", Width = 110, Height = 32, Enabled = false)
-        actions.Controls.Add(verifyButton)
-        actions.Controls.Add(cancelButton)
-        actions.Controls.Add(stopButton)
+        (* ---- Action bar ---- *)
+        let actionBar = new FlowLayoutPanel(Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = cBg, Padding = System.Windows.Forms.Padding(0, 7, 0, 4))
+        let stopButton = new Button(Text = "Stop runtime", Width = 128, Height = 32, Enabled = false, BackColor = cCard, ForeColor = cTextDim, FlatStyle = FlatStyle.Flat, Font = fontBody)
+        stopButton.FlatAppearance.BorderSize <- 1
+        stopButton.FlatAppearance.BorderColor <- cBorder
+        let cancelButton = new Button(Text = "Cancel", Width = 82, Height = 32, Enabled = false, BackColor = cCard, ForeColor = cTextDim, FlatStyle = FlatStyle.Flat, Font = fontBody)
+        cancelButton.FlatAppearance.BorderSize <- 1
+        cancelButton.FlatAppearance.BorderColor <- cBorder
+        actionBar.Controls.Add(stopButton)
+        actionBar.Controls.Add(cancelButton)
 
-        let tabs = new TabControl(Dock = DockStyle.Fill)
-        let settingsTab = new TabPage(Text = "Settings", BackColor = Color.FromArgb(245, 246, 248))
-        let activityTab = new TabPage(Text = "Activity", BackColor = Color.FromArgb(245, 246, 248))
-        let activity = new TextBox(Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = Color.White, Font = new Font("Consolas", 9.0f))
-        activityTab.Controls.Add(activity)
-
-        let settingsRoot = new TableLayoutPanel(Dock = DockStyle.Fill, Padding = System.Windows.Forms.Padding(10), ColumnCount = 2, RowCount = 2)
-        settingsRoot.ColumnStyles.Add(ColumnStyle(SizeType.Percent, 50.0f)) |> ignore
-        settingsRoot.ColumnStyles.Add(ColumnStyle(SizeType.Percent, 50.0f)) |> ignore
+        (* ---- Settings panel (no tabs, no activity log) ---- *)
+        let settingsRoot = new TableLayoutPanel(Dock = DockStyle.Fill, BackColor = cBg, Padding = System.Windows.Forms.Padding(0, 4, 0, 4), ColumnCount = 2, RowCount = 1)
+        settingsRoot.ColumnStyles.Add(ColumnStyle(SizeType.Percent, 38.0f)) |> ignore
+        settingsRoot.ColumnStyles.Add(ColumnStyle(SizeType.Percent, 62.0f)) |> ignore
         settingsRoot.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
-        settingsRoot.RowStyles.Add(RowStyle(SizeType.Absolute, 44.0f)) |> ignore
 
-        let settingGrid titleText =
-            let group = new GroupBox(Text = titleText, Dock = DockStyle.Fill, Padding = System.Windows.Forms.Padding(10))
-            let grid = new TableLayoutPanel(Dock = DockStyle.Fill, ColumnCount = 2, AutoScroll = true)
+        let darkGroupBox (text: string) =
+            let g = new GroupBox(Text = text, Dock = DockStyle.Fill, BackColor = cPanel, ForeColor = cTextDim, Font = fontBody, Padding = System.Windows.Forms.Padding(14, 12, 14, 12))
+            g
+
+        let settingGrid (g: GroupBox) =
+            let grid = new TableLayoutPanel(Dock = DockStyle.Fill, BackColor = cPanel, ColumnCount = 2, AutoScroll = true, Padding = System.Windows.Forms.Padding(4, 8, 4, 4))
             grid.ColumnStyles.Add(ColumnStyle(SizeType.Percent, 58.0f)) |> ignore
             grid.ColumnStyles.Add(ColumnStyle(SizeType.Percent, 42.0f)) |> ignore
-            group.Controls.Add(grid)
-            group, grid
+            g.Controls.Add(grid)
+            grid
+
+        let styleLabel (l: Label) = l.ForeColor <- cTextDim; l.Font <- fontBodyS
+        let styleCheckBox (c: CheckBox) = c.ForeColor <- cText; c.Font <- fontBodyS
+        let styleNumeric (n: NumericUpDown) = n.BackColor <- cCard; n.ForeColor <- cText; n.Font <- fontBodyS; n.BorderStyle <- BorderStyle.FixedSingle
+        let styleCombo (b: ComboBox) = b.BackColor <- cCard; b.ForeColor <- cText; b.Font <- fontBodyS; b.FlatStyle <- FlatStyle.Flat
+        let styleTextBox (t: TextBox) = t.BackColor <- cCard; t.ForeColor <- cText; t.Font <- fontBodyS; t.BorderStyle <- BorderStyle.FixedSingle
 
         let addSetting (grid: TableLayoutPanel) labelText (control: Control) =
             let row = grid.RowCount
             grid.RowCount <- row + 1
-            grid.RowStyles.Add(RowStyle(SizeType.Absolute, 32.0f)) |> ignore
-            grid.Controls.Add(new Label(Text = labelText, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft), 0, row)
+            grid.RowStyles.Add(RowStyle(SizeType.Absolute, 36.0f)) |> ignore
+            let lbl = new Label(Text = labelText, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft)
+            styleLabel lbl
+            grid.Controls.Add(lbl, 0, row)
             control.Dock <- DockStyle.Fill
+            match control with
+            | :? CheckBox as c -> styleCheckBox c
+            | :? NumericUpDown as n -> styleNumeric n
+            | :? ComboBox as b -> styleCombo b
+            | :? TextBox as t -> styleTextBox t
+            | _ -> ()
             grid.Controls.Add(control, 1, row)
 
         let numeric minimum maximum value =
-            new NumericUpDown(Minimum = decimal minimum, Maximum = decimal maximum, Value = decimal value)
+            let n = new NumericUpDown(Minimum = decimal minimum, Maximum = decimal maximum, Value = decimal value)
+            styleNumeric n
+            n
 
         let modeBox selected =
             let box = new ComboBox(DropDownStyle = ComboBoxStyle.DropDownList)
+            styleCombo box
             box.Items.Add("Normal") |> ignore
             box.Items.Add("Extra") |> ignore
             box.Items.Add("Extra Plus") |> ignore
             box.SelectedIndex <- int selected
             box
 
-        let leftGroup, leftGrid = settingGrid "Left clicker"
+        let leftGroup = darkGroupBox "AutoClicker settings"
+        let leftGrid = settingGrid leftGroup
         let leftEnabled = new CheckBox(Checked = Configuration.defaults.Left.Enabled)
         let leftMinimum = numeric 1 20 Configuration.defaults.Left.MinimumCps
         let leftMaximum = numeric 1 20 Configuration.defaults.Left.MaximumCps
@@ -2214,18 +2264,18 @@ module WinFormsShell =
         let breakMinimum = numeric 0 2000 Configuration.defaults.LeftBreakDelayMinimum
         let breakMaximum = numeric 0 2000 Configuration.defaults.LeftBreakDelayMaximum
         let breakWhitelist = new CheckBox(Checked = Configuration.defaults.LeftBreakWhitelist)
-        addSetting leftGrid "Enabled" leftEnabled
-        addSetting leftGrid "Minimum CPS" leftMinimum
-        addSetting leftGrid "Maximum CPS" leftMaximum
+        addSetting leftGrid "Min CPS" leftMinimum
+        addSetting leftGrid "Max CPS" leftMaximum
         addSetting leftGrid "Randomization" leftMode
         addSetting leftGrid "Hold to click" leftHold
         addSetting leftGrid "Trigger mode" leftTrigger
         addSetting leftGrid "Break blocks" leftBreak
-        addSetting leftGrid "Break delay min (ms)" breakMinimum
-        addSetting leftGrid "Break delay max (ms)" breakMaximum
+        addSetting leftGrid "Break min (ms)" breakMinimum
+        addSetting leftGrid "Break max (ms)" breakMaximum
         addSetting leftGrid "Tool whitelist" breakWhitelist
 
-        let rightGroup, rightGrid = settingGrid "Right clicker"
+        let rightGroup = darkGroupBox "RightClicker settings"
+        let rightGrid = settingGrid rightGroup
         let rightEnabled = new CheckBox(Checked = Configuration.defaults.Right.Enabled)
         let rightMinimum = numeric 1 20 Configuration.defaults.Right.MinimumCps
         let rightMaximum = numeric 1 20 Configuration.defaults.Right.MaximumCps
@@ -2234,48 +2284,112 @@ module WinFormsShell =
         let rightDelay = numeric 0 1000 Configuration.defaults.RightStartDelayMillis
         let rightWhitelistEnabled = new CheckBox(Checked = Configuration.defaults.RightUseItemWhitelist)
         let rightWhitelist = new TextBox(Text = String.concat ", " Configuration.defaults.RightWhitelist)
-        addSetting rightGrid "Enabled" rightEnabled
-        addSetting rightGrid "Minimum CPS" rightMinimum
-        addSetting rightGrid "Maximum CPS" rightMaximum
+        addSetting rightGrid "Min CPS" rightMinimum
+        addSetting rightGrid "Max CPS" rightMaximum
         addSetting rightGrid "Randomization" rightMode
         addSetting rightGrid "Hold to click" rightHold
         addSetting rightGrid "Start delay (ms)" rightDelay
-        addSetting rightGrid "Use item whitelist" rightWhitelistEnabled
-        addSetting rightGrid "Items (comma separated)" rightWhitelist
+        addSetting rightGrid "Item whitelist" rightWhitelistEnabled
+        addSetting rightGrid "Items (comma sep)" rightWhitelist
 
-        let settingsActions = new FlowLayoutPanel(Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight)
-        let applyButton = new Button(Text = "Apply settings", Width = 120, Height = 30, Enabled = false, BackColor = Color.FromArgb(43, 91, 171), ForeColor = Color.White, FlatStyle = FlatStyle.Flat)
-        applyButton.FlatAppearance.BorderSize <- 0
-        let validationLabel = new Label(Text = "Waiting for IPC runtime", AutoSize = true, ForeColor = Color.DimGray, Padding = System.Windows.Forms.Padding(8, 7, 0, 0))
-        settingsActions.Controls.Add(applyButton)
-        settingsActions.Controls.Add(validationLabel)
-        settingsRoot.Controls.Add(leftGroup, 0, 0)
-        settingsRoot.Controls.Add(rightGroup, 1, 0)
-        settingsRoot.Controls.Add(settingsActions, 0, 1)
-        settingsRoot.SetColumnSpan(settingsActions, 2)
-        settingsTab.Controls.Add(settingsRoot)
-        tabs.TabPages.Add(settingsTab)
-        tabs.TabPages.Add(activityTab)
+        let moduleList = new TableLayoutPanel(Dock = DockStyle.Fill, BackColor = cBg, Padding = System.Windows.Forms.Padding(0, 0, 12, 0), ColumnCount = 1, RowCount = 3)
+        moduleList.RowStyles.Add(RowStyle(SizeType.Absolute, 82.0f)) |> ignore
+        moduleList.RowStyles.Add(RowStyle(SizeType.Absolute, 82.0f)) |> ignore
+        moduleList.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
 
-        let footer = new Panel(Dock = DockStyle.Fill)
-        let stateLabel = new Label(Text = "Idle", AutoSize = true, Location = Point(0, 12), Font = new Font("Segoe UI Semibold", 9.0f))
-        let runtimeLabel = new Label(Text = "IPC: offline", AutoSize = true, ForeColor = Color.DimGray, Location = Point(180, 12))
-        let sdkLabel = new Label(Text = $"Loader {Loader.Version}  |  Config ABI {Configuration.Version}", AutoSize = true, ForeColor = Color.Gray, Anchor = (AnchorStyles.Top ||| AnchorStyles.Right))
+        let moduleRow name summary (toggle: CheckBox) =
+            let panel = new Panel(Dock = DockStyle.Fill, BackColor = cCard, Margin = System.Windows.Forms.Padding(0, 0, 0, 8), Cursor = Cursors.Hand)
+            let nameLabel = new Label(Text = name, Font = fontTitle, ForeColor = cText, AutoSize = true, Location = Point(16, 13), Cursor = Cursors.Hand)
+            let summaryLabel = new Label(Text = summary, Font = fontBodyS, ForeColor = cTextMut, AutoEllipsis = true, Location = Point(16, 42), Anchor = (AnchorStyles.Left ||| AnchorStyles.Right ||| AnchorStyles.Top), Width = 235, Cursor = Cursors.Hand)
+            toggle.Appearance <- Appearance.Button
+            toggle.AutoSize <- false
+            toggle.Size <- Size(50, 26)
+            toggle.Location <- Point(panel.Width - 66, 24)
+            toggle.Anchor <- AnchorStyles.Top ||| AnchorStyles.Right
+            toggle.FlatStyle <- FlatStyle.Flat
+            toggle.FlatAppearance.BorderSize <- 0
+            toggle.TextAlign <- ContentAlignment.MiddleCenter
+            toggle.Font <- fontBodyS
+            let refreshToggle () =
+                toggle.Text <- if toggle.Checked then "ON" else "OFF"
+                toggle.BackColor <- if toggle.Checked then cAccent else cCardHov
+                toggle.ForeColor <- if toggle.Checked then cBg else cTextDim
+            toggle.CheckedChanged.Add(fun _ -> refreshToggle())
+            refreshToggle()
+            panel.Controls.Add(nameLabel)
+            panel.Controls.Add(summaryLabel)
+            panel.Controls.Add(toggle)
+            panel, nameLabel, summaryLabel
+
+        let leftRow, leftNameLabel, leftSummary = moduleRow "AutoClicker" "12-15 CPS, Extra, hold to click" leftEnabled
+        let rightRow, rightNameLabel, rightSummary = moduleRow "RightClicker" "8-11 CPS, Extra, hold to click" rightEnabled
+        let settingsPane = new Panel(Dock = DockStyle.Fill, BackColor = cPanel, Padding = System.Windows.Forms.Padding(8))
+        settingsPane.Controls.Add(rightGroup)
+        settingsPane.Controls.Add(leftGroup)
+        leftGroup.BringToFront()
+        rightGroup.Visible <- false
+
+        let selectModule showLeft =
+            leftGroup.Visible <- showLeft
+            rightGroup.Visible <- not showLeft
+            if showLeft then leftGroup.BringToFront() else rightGroup.BringToFront()
+            leftRow.BackColor <- if showLeft then cCardHov else cCard
+            rightRow.BackColor <- if showLeft then cCard else cCardHov
+            leftNameLabel.ForeColor <- if showLeft then cAccent else cText
+            rightNameLabel.ForeColor <- if showLeft then cText else cAccent
+
+        let bindSelect (panel: Panel) (label1: Label) (label2: Label) showLeft =
+            panel.Click.Add(fun _ -> selectModule showLeft)
+            label1.Click.Add(fun _ -> selectModule showLeft)
+            label2.Click.Add(fun _ -> selectModule showLeft)
+
+        bindSelect leftRow leftNameLabel leftSummary true
+        bindSelect rightRow rightNameLabel rightSummary false
+        selectModule true
+
+        let updateSummaries () =
+            let modeText (box: ComboBox) = if box.SelectedItem = null then "Normal" else string box.SelectedItem
+            let enabledText value text = if value then $", {text}" else ""
+            let leftHoldText = enabledText leftHold.Checked "hold"
+            let leftTriggerText = enabledText leftTrigger.Checked "trigger"
+            let rightHoldText = enabledText rightHold.Checked "hold"
+            let rightWhitelistText = enabledText rightWhitelistEnabled.Checked "whitelist"
+            leftSummary.Text <- $"{int leftMinimum.Value}-{int leftMaximum.Value} CPS, {modeText leftMode}{leftHoldText}{leftTriggerText}"
+            rightSummary.Text <- $"{int rightMinimum.Value}-{int rightMaximum.Value} CPS, {modeText rightMode}{rightHoldText}{rightWhitelistText}"
+
+        [| leftMinimum :> Control; leftMaximum :> Control; leftMode :> Control; leftHold :> Control; leftTrigger :> Control
+           rightMinimum :> Control; rightMaximum :> Control; rightMode :> Control; rightHold :> Control; rightWhitelistEnabled :> Control |]
+        |> Array.iter (fun control ->
+            match control with
+            | :? NumericUpDown as number -> number.ValueChanged.Add(fun _ -> updateSummaries())
+            | :? ComboBox as box -> box.SelectedIndexChanged.Add(fun _ -> updateSummaries())
+            | :? CheckBox as box -> box.CheckedChanged.Add(fun _ -> updateSummaries())
+            | _ -> ())
+        updateSummaries()
+
+        moduleList.Controls.Add(leftRow, 0, 0)
+        moduleList.Controls.Add(rightRow, 0, 1)
+        settingsRoot.Controls.Add(moduleList, 0, 0)
+        settingsRoot.Controls.Add(settingsPane, 1, 0)
+
+        (* ---- Footer ---- *)
+        let footer = new Panel(Dock = DockStyle.Fill, BackColor = cBg)
+        let stateLabel = new Label(Text = "Idle", AutoSize = true, Location = Point(4, 9), Font = fontBodyS, ForeColor = cTextDim)
+        let runtimeLabel = new Label(Text = "offline", AutoSize = true, ForeColor = cTextMut, Font = fontBodyS, Location = Point(160, 9))
+        let sdkLabel = new Label(Text = $"v{Loader.Version}", AutoSize = true, ForeColor = cTextMut, Font = fontBodyS, Anchor = (AnchorStyles.Top ||| AnchorStyles.Right))
         footer.Controls.Add(stateLabel)
         footer.Controls.Add(runtimeLabel)
         footer.Controls.Add(sdkLabel)
-        footer.Resize.Add(fun _ -> sdkLabel.Location <- Point(footer.ClientSize.Width - sdkLabel.Width, 12))
+        footer.Resize.Add(fun _ -> sdkLabel.Location <- Point(footer.ClientSize.Width - sdkLabel.Width - 4, 9))
 
-        content.Controls.Add(targetGroup, 0, 0)
-        content.Controls.Add(actions, 0, 1)
-        content.Controls.Add(tabs, 0, 2)
+        content.Controls.Add(targetCard, 0, 0)
+        content.Controls.Add(actionBar, 0, 1)
+        content.Controls.Add(settingsRoot, 0, 2)
         content.Controls.Add(footer, 0, 3)
         form.Controls.Add(content)
         form.Controls.Add(header)
 
-        let appendActivity message =
-            let timestamp = DateTimeOffset.Now.ToString("HH:mm:ss")
-            activity.AppendText($"[{timestamp}] {message}{Environment.NewLine}")
+        let appendActivity (_message: string) = ()
 
         let setState next =
             state.Transition(next)
@@ -2283,12 +2397,8 @@ module WinFormsShell =
 
         let setBusy busy =
             let runtimeActive = ipcSession.IsSome
-            refreshButton.Enabled <- not busy && not runtimeActive
-            verifyButton.Enabled <- not busy && not runtimeActive
-            targetBox.Enabled <- not busy
             cancelButton.Enabled <- busy
             stopButton.Enabled <- not busy && runtimeActive
-            applyButton.Enabled <- not busy && runtimeActive
 
         let dispatch (action: unit -> unit) =
             if not form.IsDisposed && form.IsHandleCreated then
@@ -2344,20 +2454,18 @@ module WinFormsShell =
                 ipcSession <- None
                 sessionTarget <- None
             | None -> ()
-            applyButton.Enabled <- false
             stopButton.Enabled <- false
-            runtimeLabel.Text <- "IPC: offline"
-            validationLabel.Text <- "Waiting for IPC runtime"
-            validationLabel.ForeColor <- Color.DimGray
+            runtimeLabel.Text <- "offline"
 
-        let updateValidation () =
-            match buildConfiguration() with
-            | Ok _ ->
-                validationLabel.Text <- "Snapshot valid"
-                validationLabel.ForeColor <- Color.FromArgb(34, 120, 72)
-            | Error errors ->
-                validationLabel.Text <- errors.Head
-                validationLabel.ForeColor <- Color.Firebrick
+        let publishConfig () =
+            match ipcSession, buildConfiguration() with
+            | Some session, Ok snapshot ->
+                try
+                    let generation = session.Publish(snapshot)
+                    session.SetLoaderState(IpcAbi.LifecycleState.Ready, 0)
+                    runtimeLabel.Text <- $"{IpcAbi.LifecycleState.Ready} | gen {generation}"
+                with _ -> ()
+            | _ -> ()
 
         let mutable requestShutdown: bool -> unit = ignore
 
@@ -2369,10 +2477,10 @@ module WinFormsShell =
             disposeSession()
             if acknowledged then
                 setState LoaderState.Stopped
-                appendActivity "Runtime stopped and acknowledged"
+                appendActivity "Runtime stopped"
             else
-                setState (LoaderState.Failed "Payload did not acknowledge shutdown before timeout")
-                appendActivity "ERROR: shutdown acknowledgement timed out"
+                setState (LoaderState.Failed "Shutdown timed out")
+                appendActivity "ERROR: shutdown timed out"
             finishOperation()
             if closeAfterShutdown && not form.IsDisposed then
                 closeAfterShutdown <- false
@@ -2394,7 +2502,7 @@ module WinFormsShell =
                     try
                         session.SetLoaderState(IpcAbi.LifecycleState.Stopping, 0)
                         session.RequestStop()
-                        appendActivity "Stop requested; waiting up to 3 seconds for acknowledgement"
+                        appendActivity "Stopping..."
                         Task.Run((fun () -> session.WaitForStopAcknowledgement(TimeSpan.FromSeconds(3.0))), cancellation.Token)
                             .ContinueWith(fun (completed: Task<bool>) ->
                                 dispatch (fun () ->
@@ -2409,26 +2517,94 @@ module WinFormsShell =
                         cleanupAfterShutdown false
             | Some _ -> ()
 
-        let validateSelectedTarget () =
-            match targetBox.SelectedItem with
-            | :? CandidateItem as item ->
-                let errors = TargetDiscovery.revalidate item.Target
-                if errors.IsEmpty then Ok item.Target
-                else Error(errors |> String.concat "; ")
-            | _ -> Error "Select a Minecraft target first"
+        (* ---- Auto-inject flow: discover -> download -> verify -> inject ---- *)
+        let releaseEndpoint = "https://github.com/tejugenz-ops/gg/releases/download/v1"
 
-        let discoverTargets () =
+        let startInjection (selectedTarget: TargetDiscovery.Target) =
+            if state.TryTransition(LoaderState.DownloadingPayload) then
+                stateLabel.Text <- LoaderState.describe LoaderState.DownloadingPayload
+                setBusy true
+                let cancellation = new CancellationTokenSource()
+                operation <- Some cancellation
+                appendActivity "Acquiring payload..."
+                Task.Run((fun () ->
+                    let initialErrors = TargetDiscovery.revalidate selectedTarget
+                    if not initialErrors.IsEmpty then Error(initialErrors |> String.concat "; ")
+                    else
+                        use publicKey = PinnedKey.load()
+                        match Acquisition.download (Acquisition.defaultConfig releaseEndpoint) cancellation.Token with
+                        | Error message -> Error message
+                        | Ok(metadataBytes, payloadBytes) ->
+                            cancellation.Token.ThrowIfCancellationRequested()
+                            let errors = TargetDiscovery.revalidate selectedTarget
+                            if not errors.IsEmpty then Error(errors |> String.concat "; ")
+                            else verifyRelease metadataBytes payloadBytes publicKey (defaultConstraints())
+                                 |> Result.map (fun (metadata, image) -> (metadata, image, payloadBytes))), cancellation.Token)
+                    .ContinueWith(fun (completed: Task<Result<ReleaseMetadata.Metadata * Pe.Image * byte[], string>>) ->
+                        dispatch (fun () ->
+                            if completed.IsCanceled || cancellation.IsCancellationRequested then
+                                appendActivity "Cancelled"
+                                setState LoaderState.Idle
+                                finishOperation()
+                            elif completed.IsFaulted then
+                                failOperation (completed.Exception.GetBaseException().Message)
+                            else
+                                setState LoaderState.VerifyingPayload
+                                match completed.Result with
+                                | Error message -> failOperation message
+                                | Ok(metadata, image, payloadBytes) ->
+                                    appendActivity "Payload verified"
+                                    setState LoaderState.PreparingIpc
+                                    match buildConfiguration() with
+                                    | Error errors -> failOperation (errors |> String.concat "; ")
+                                    | Ok snapshot ->
+                                        try
+                                            let session = IpcAbi.Session.Create(IpcAbi.targetIdentity selectedTarget, snapshot)
+                                            session.SetLoaderState(IpcAbi.LifecycleState.Starting, 0)
+                                            ipcSession <- Some session
+                                            sessionTarget <- Some selectedTarget
+                                            runtimeLabel.Text <- $"waiting | {session.Names.Token[..7]}"
+                                            let configBytes = IpcAbi.serializeConfig snapshot
+                                            let pid = selectedTarget.ProcessId
+                                            Task.Run((fun () -> ManualMap.inject payloadBytes pid configBytes session.MappingHandle), cancellation.Token)
+                                                .ContinueWith(fun (injection: Task<Result<nativeint, string>>) ->
+                                                    dispatch (fun () ->
+                                                        Array.Clear(payloadBytes, 0, payloadBytes.Length)
+                                                        if injection.IsCanceled || cancellation.IsCancellationRequested then
+                                                            appendActivity "Injection cancelled"
+                                                            disposeSession()
+                                                            setState LoaderState.Idle
+                                                            finishOperation()
+                                                        elif injection.IsFaulted then
+                                                            appendActivity $"ERROR: {injection.Exception.GetBaseException().Message}"
+                                                            disposeSession()
+                                                            failOperation (injection.Exception.GetBaseException().Message)
+                                                        else
+                                                            match injection.Result with
+                                                            | Error message ->
+                                                                appendActivity $"ERROR: {message}"
+                                                                disposeSession()
+                                                                failOperation message
+                                                            | Ok remoteBase ->
+                                                                appendActivity "Injected"
+                                                                setState LoaderState.WaitingForReady
+                                                                finishOperation()))
+                                            |> ignore
+                                        with error -> failOperation error.Message))
+                    |> ignore
+
+        let discoverAndAutoInject () =
             if state.TryTransition(LoaderState.DiscoveringTarget) then
                 stateLabel.Text <- LoaderState.describe LoaderState.DiscoveringTarget
                 setBusy true
                 let cancellation = new CancellationTokenSource()
                 operation <- Some cancellation
-                appendActivity "Scanning top-level windows..."
+                appendActivity "Scanning for target..."
                 Task.Run((fun () -> TargetDiscovery.discover()), cancellation.Token)
                     .ContinueWith(fun (completed: Task<TargetDiscovery.Discovery>) ->
                         dispatch (fun () ->
                             if completed.IsCanceled || cancellation.IsCancellationRequested then
-                                appendActivity "Target discovery cancelled"
+                                appendActivity "Scan cancelled"
                                 setState LoaderState.Idle
                                 finishOperation()
                             elif completed.IsFaulted then
@@ -2437,51 +2613,36 @@ module WinFormsShell =
                                 let discovery = completed.Result
                                 let oldTargets = targets
                                 targets <- discovery.Targets
-                                targetBox.Items.Clear()
-                                targets |> List.iter (fun target -> targetBox.Items.Add(CandidateItem(target)) |> ignore)
-                                if targetBox.Items.Count > 0 then targetBox.SelectedIndex <- 0
                                 disposeTargets oldTargets
-                                discovery.Issues |> List.iter (fun issue -> appendActivity $"Discovery issue: {issue}")
-                                appendActivity $"Found {targets.Length} candidate(s)"
-                                setState LoaderState.Idle
-                                finishOperation()))
-                |> ignore
-
-        targetBox.SelectedIndexChanged.Add(fun _ ->
-            match targetBox.SelectedItem with
-            | :? CandidateItem as item ->
-                let target = item.Target
-                targetDetails.Text <- $"{target.ExecutablePath}  |  {target.Architecture}  |  created {target.CreationTimeUtc.LocalDateTime:g}"
-            | _ -> targetDetails.Text <- "No target selected")
-
-        refreshButton.Click.Add(fun _ -> discoverTargets())
+                                discovery.Issues |> List.iter (fun issue -> appendActivity $"Issue: {issue}")
+                                match targets with
+                                | [] ->
+                                    appendActivity "No target found"
+                                    targetDetails.Text <- "No Minecraft window found"
+                                    setState LoaderState.Idle
+                                    finishOperation()
+                                | first :: _ ->
+                                    let errors = TargetDiscovery.revalidate first
+                                    if not errors.IsEmpty then
+                                        let msg = errors |> String.concat "; "
+                                        appendActivity $"Target invalid: {msg}"
+                                        targetDetails.Text <- "Target invalid"
+                                        setState LoaderState.Idle
+                                        finishOperation()
+                                    else
+                                        let titleText = if String.IsNullOrWhiteSpace(first.WindowTitle) then "Minecraft" else first.WindowTitle
+                                        targetDetails.Text <- $"PID {first.ProcessId}  |  {first.Architecture}  |  {titleText}"
+                                        appendActivity $"Target found: PID {first.ProcessId}"
+                                        setState LoaderState.Idle
+                                        finishOperation()
+                                        startInjection first))
+                    |> ignore
 
         cancelButton.Click.Add(fun _ ->
             operation |> Option.iter (fun value -> value.Cancel())
             appendActivity "Cancellation requested")
 
         stopButton.Click.Add(fun _ -> requestShutdown false)
-
-        applyButton.Click.Add(fun _ ->
-            match ipcSession, buildConfiguration() with
-            | None, _ ->
-                validationLabel.Text <- "IPC runtime is not active"
-                validationLabel.ForeColor <- Color.Firebrick
-            | Some _, Error errors ->
-                validationLabel.Text <- errors.Head
-                validationLabel.ForeColor <- Color.Firebrick
-                tabs.SelectedTab <- settingsTab
-            | Some session, Ok snapshot ->
-                try
-                    let generation = session.Publish(snapshot)
-                    session.SetLoaderState(IpcAbi.LifecycleState.Ready, 0)
-                    validationLabel.Text <- $"Published generation {generation}"
-                    validationLabel.ForeColor <- Color.FromArgb(34, 120, 72)
-                    appendActivity $"Published complete settings snapshot at generation {generation}"
-                with error ->
-                    validationLabel.Text <- error.Message
-                    validationLabel.ForeColor <- Color.Firebrick
-                    appendActivity $"ERROR: settings publication failed: {error.Message}")
 
         let settingControls: Control array = [|
             leftEnabled; leftMinimum; leftMaximum; leftMode; leftHold; leftTrigger
@@ -2491,96 +2652,11 @@ module WinFormsShell =
         |]
         settingControls |> Array.iter (fun control ->
             match control with
-            | :? CheckBox as box -> box.CheckedChanged.Add(fun _ -> updateValidation())
-            | :? NumericUpDown as number -> number.ValueChanged.Add(fun _ -> updateValidation())
-            | :? ComboBox as box -> box.SelectedIndexChanged.Add(fun _ -> updateValidation())
-            | :? TextBox as box -> box.TextChanged.Add(fun _ -> updateValidation())
+            | :? CheckBox as box -> box.CheckedChanged.Add(fun _ -> publishConfig())
+            | :? NumericUpDown as number -> number.ValueChanged.Add(fun _ -> publishConfig())
+            | :? ComboBox as box -> box.SelectedIndexChanged.Add(fun _ -> publishConfig())
+            | :? TextBox as box -> box.TextChanged.Add(fun _ -> publishConfig())
             | _ -> ())
-
-        let releaseEndpoint = "https://github.com/tejugenz-ops/gg/releases/download/v1"
-
-        verifyButton.Click.Add(fun _ ->
-            match validateSelectedTarget() with
-            | Error message -> failOperation message
-            | Ok selectedTarget ->
-                if state.TryTransition(LoaderState.DownloadingPayload) then
-                    stateLabel.Text <- LoaderState.describe LoaderState.DownloadingPayload
-                    setBusy true
-                    let cancellation = new CancellationTokenSource()
-                    operation <- Some cancellation
-                    let endpoint = releaseEndpoint
-                    appendActivity $"Downloading signed release from {endpoint}"
-                    Task.Run((fun () ->
-                        let initialErrors = TargetDiscovery.revalidate selectedTarget
-                        if not initialErrors.IsEmpty then Error(initialErrors |> String.concat "; ")
-                        else
-                            use publicKey = PinnedKey.load()
-                            match Acquisition.download (Acquisition.defaultConfig endpoint) cancellation.Token with
-                            | Error message -> Error message
-                            | Ok(metadataBytes, payloadBytes) ->
-                                cancellation.Token.ThrowIfCancellationRequested()
-                                let errors = TargetDiscovery.revalidate selectedTarget
-                                if not errors.IsEmpty then Error(errors |> String.concat "; ")
-                                else verifyRelease metadataBytes payloadBytes publicKey (defaultConstraints())
-                                     |> Result.map (fun (metadata, image) -> (metadata, image, payloadBytes))), cancellation.Token)
-                        .ContinueWith(fun (completed: Task<Result<ReleaseMetadata.Metadata * Pe.Image * byte[], string>>) ->
-                            dispatch (fun () ->
-                                if completed.IsCanceled || cancellation.IsCancellationRequested then
-                                    appendActivity "Release verification cancelled"
-                                    setState LoaderState.Idle
-                                    finishOperation()
-                                elif completed.IsFaulted then
-                                    failOperation (completed.Exception.GetBaseException().Message)
-                                else
-                                    setState LoaderState.VerifyingPayload
-                                    match completed.Result with
-                                    | Error message -> failOperation message
-                                    | Ok(metadata, image, payloadBytes) ->
-                                        appendActivity $"Verified payload {metadata.PayloadVersion}, SHA-256 {Convert.ToHexString(metadata.Sha256).ToLowerInvariant()}"
-                                        appendActivity $"Validated AMD64 PE32+ image: {image.SizeOfImage} bytes, {image.Sections.Length} sections"
-                                        setState LoaderState.PreparingIpc
-                                        match buildConfiguration() with
-                                        | Error errors -> failOperation (errors |> String.concat "; ")
-                                        | Ok snapshot ->
-                                            try
-                                                let session = IpcAbi.Session.Create(IpcAbi.targetIdentity selectedTarget, snapshot)
-                                                session.SetLoaderState(IpcAbi.LifecycleState.Starting, 0)
-                                                ipcSession <- Some session
-                                                sessionTarget <- Some selectedTarget
-                                                runtimeLabel.Text <- $"IPC: waiting | {session.Names.Token[..7]}"
-                                                validationLabel.Text <- "Initial snapshot published"
-                                                validationLabel.ForeColor <- Color.FromArgb(34, 120, 72)
-                                                appendActivity "Created anonymous per-run IPC mapping"
-                                                appendActivity "Injecting payload into target process..."
-                                                let configBytes = IpcAbi.serializeConfig snapshot
-                                                let pid = selectedTarget.ProcessId
-                                                Task.Run((fun () -> ManualMap.inject payloadBytes pid configBytes session.MappingHandle), cancellation.Token)
-                                                    .ContinueWith(fun (injection: Task<Result<nativeint, string>>) ->
-                                                        dispatch (fun () ->
-                                                            Array.Clear(payloadBytes, 0, payloadBytes.Length)
-                                                            if injection.IsCanceled || cancellation.IsCancellationRequested then
-                                                                appendActivity "Injection cancelled"
-                                                                disposeSession()
-                                                                setState LoaderState.Idle
-                                                                finishOperation()
-                                                            elif injection.IsFaulted then
-                                                                appendActivity $"ERROR: {injection.Exception.GetBaseException().Message}"
-                                                                disposeSession()
-                                                                failOperation (injection.Exception.GetBaseException().Message)
-                                                            else
-                                                                match injection.Result with
-                                                                | Error message ->
-                                                                    appendActivity $"ERROR: injection failed: {message}"
-                                                                    disposeSession()
-                                                                    failOperation message
-                                                                | Ok remoteBase ->
-                                                                    appendActivity $"Injected at remote base 0x{uint64 (int64 remoteBase):X}"
-                                                                    appendActivity "Waiting for native payload to open IPC and report Ready"
-                                                                    setState LoaderState.WaitingForReady
-                                                                    finishOperation()))
-                                                |> ignore
-                                            with error -> failOperation error.Message))
-                    |> ignore)
 
         let monitor = new System.Windows.Forms.Timer(Interval = 500)
         monitor.Tick.Add(fun _ ->
@@ -2590,22 +2666,20 @@ module WinFormsShell =
                     session.TouchHeartbeat()
                     let status = session.ReadStatus()
                     let targetErrors = TargetDiscovery.revalidate target
-                    runtimeLabel.Text <- $"IPC: {status.PayloadState} | gen {status.Generation}/{status.LastAcceptedGeneration}"
+                    runtimeLabel.Text <- $"{status.PayloadState} | gen {status.Generation}/{status.LastAcceptedGeneration}"
                     if not targetErrors.IsEmpty && state.State <> LoaderState.Stopping then
                         let message = targetErrors |> String.concat "; "
                         if message <> lastMonitorMessage then
                             lastMonitorMessage <- message
-                            appendActivity $"ERROR: target monitor: {message}"
+                            appendActivity $"ERROR: {message}"
                         requestShutdown false
                     elif status.PayloadState = IpcAbi.LifecycleState.Ready && state.State = LoaderState.WaitingForReady then
                         session.SetLoaderState(IpcAbi.LifecycleState.Ready, 0)
                         setState LoaderState.Running
                         stopButton.Enabled <- true
-                        applyButton.Enabled <- true
                         lastMonitorMessage <- ""
-                        appendActivity "Native payload reported Ready; runtime monitoring active"
                     elif status.PayloadState = IpcAbi.LifecycleState.Failed && state.State <> LoaderState.Stopping then
-                        let message = $"Native payload reported failure code {status.ErrorCode}"
+                        let message = $"Payload failed (code {status.ErrorCode})"
                         if message <> lastMonitorMessage then
                             lastMonitorMessage <- message
                             appendActivity $"ERROR: {message}"
@@ -2613,7 +2687,7 @@ module WinFormsShell =
                 with error ->
                     if state.State <> LoaderState.Stopping && error.Message <> lastMonitorMessage then
                         lastMonitorMessage <- error.Message
-                        appendActivity $"ERROR: IPC monitor: {error.Message}"
+                        appendActivity $"ERROR: {error.Message}"
                         requestShutdown false
             | _ -> ())
         monitor.Start()
@@ -2655,18 +2729,13 @@ module WinFormsShell =
                 monitor.Stop()
                 monitor.Dispose()
                 hotkeyRunning <- false
-                (* Zero identifying strings in the managed heap before exit.
-                 * .NET interns string literals — they survive after control
-                 * references are nulled. We pin each one and overwrite its
-                 * UTF-16 char data with zeros so a kernel dump of fsi's freed
-                 * physical pages contains no identifying text. *)
                 let zeroString (s: string) =
                     if not (isNull s) && s.Length > 0 then
                         try
                             let gch = Runtime.InteropServices.GCHandle.Alloc(s, Runtime.InteropServices.GCHandleType.Pinned)
                             try
                                 let ptr = gch.AddrOfPinnedObject()
-                                let charDataPtr = IntPtr.Add(ptr, 12)  (* x64: 8-byte header + 4-byte length *)
+                                let charDataPtr = IntPtr.Add(ptr, 12)
                                 for i in 0 .. s.Length - 1 do
                                     Marshal.WriteInt16(charDataPtr, i * 2, 0s)
                             finally
@@ -2678,29 +2747,14 @@ module WinFormsShell =
                     for child in c.Controls do
                         zeroControlText child
                 zeroControlText form
+                zeroString "SYSTEM HELPER"
+                zeroString "Loader control plane"
+                zeroString "Stop"
+                zeroString "Cancel"
                 zeroString "Left clicker"
                 zeroString "Right clicker"
-                zeroString "Minimum CPS"
-                zeroString "Maximum CPS"
-                zeroString "Hold to click"
-                zeroString "SYSTEM HELPER"
-                zeroString "Managed loader control plane"
-                zeroString "Minecraft target"
-                zeroString "Settings"
-                zeroString "Activity"
-                zeroString "System Helper"
-                zeroString "Refresh targets"
-                zeroString "Verify release"
-                zeroString "Apply settings"
-                zeroString "Stop runtime"
-                zeroString "Waiting for IPC runtime"
-                zeroString "No target selected"
                 zeroString "Idle"
-                zeroString "IPC: offline"
-                zeroString "Select a Minecraft target first"
-                zeroString "Minecraft target"
-                zeroString "      List matching Minecraft windows and validate their process identity"
-                zeroString "No matching Minecraft windows found."
+                zeroString "offline"
                 GC.Collect(2, GCCollectionMode.Forced, true)
                 GC.WaitForPendingFinalizers()
                 GC.Collect(2, GCCollectionMode.Forced, true)
@@ -2711,7 +2765,7 @@ module WinFormsShell =
         form.Shown.Add(fun _ ->
             form.BringToFront()
             form.Activate()
-            discoverTargets())
+            discoverAndAutoInject())
 
         if smokeTest then
             form.CreateControl() |> ignore
