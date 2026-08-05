@@ -1631,6 +1631,9 @@ module ManualMap =
     let private ProcessCreateThread = 0x0002u
 
     [<Literal>]
+    let private ProcessDupHandle = 0x0040u
+
+    [<Literal>]
     let private ProcessQueryInformation = 0x0400u
 
     [<Literal>]
@@ -1857,7 +1860,7 @@ module ManualMap =
         buffer
 
     let inject (payloadBytes: byte[]) (processId: uint32) (configBytes: byte[]) (ipcMapping: SafeFileHandle) =
-        let access = ProcessVmOperation ||| ProcessVmRead ||| ProcessVmWrite ||| ProcessCreateThread ||| ProcessQueryInformation
+        let access = ProcessVmOperation ||| ProcessVmRead ||| ProcessVmWrite ||| ProcessCreateThread ||| ProcessDupHandle ||| ProcessQueryInformation
         use proc = Native.OpenProcess(access, false, processId)
         if isNull proc || proc.IsInvalid then
             Error(win32Error "OpenProcess")
