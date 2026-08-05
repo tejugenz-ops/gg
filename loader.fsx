@@ -1196,6 +1196,12 @@ module IpcAbi =
     let private LastAcceptedGenerationOffset = 80
 
     [<Literal>]
+    let private StopRequestOffset = 88
+
+    [<Literal>]
+    let private StopAckOffset = 92
+
+    [<Literal>]
     let private PageReadWrite = 0x04u
 
     [<Literal>]
@@ -1220,9 +1226,6 @@ module IpcAbi =
 
     type Names = {
         Token: string
-        Mapping: string
-        StopRequest: string
-        StopAcknowledged: string
     }
 
     type Status = {
@@ -1272,18 +1275,18 @@ module IpcAbi =
         [<DllImport("kernel32.dll", SetLastError = true)>]
         extern bool UnmapViewOfFile(nativeint address)
 
-        [<DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)>]
-        extern SafeWaitHandle CreateEventW(
-            SecurityAttributes& attributes,
-            bool manualReset,
-            bool initialState,
-            string name)
+        [<DllImport("kernel32.dll", SetLastError = true)>]
+        extern bool DuplicateHandle(
+            SafeProcessHandle sourceProcess,
+            SafeHandle sourceHandle,
+            SafeProcessHandle targetProcess,
+            nativeint& targetHandle,
+            uint32 desiredAccess,
+            bool inheritHandle,
+            uint32 options)
 
         [<DllImport("kernel32.dll", SetLastError = true)>]
-        extern bool SetEvent(SafeWaitHandle eventHandle)
-
-        [<DllImport("kernel32.dll", SetLastError = true)>]
-        extern uint32 WaitForSingleObject(SafeWaitHandle handle, uint32 milliseconds)
+        extern bool CloseHandle(nativeint handle)
 
     let private win32Error operation =
         let code = Marshal.GetLastWin32Error()
@@ -1397,13 +1400,7 @@ module IpcAbi =
 
     let createNames () =
         let token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant()
-        let prefix = $"Local\\WinHelper_{token}"
-        {
-            Token = token
-            Mapping = $"{prefix}_Ipc"
-            StopRequest = $"{prefix}_Stop"
-            StopAcknowledged = $"{prefix}_Stopped"
-        }
+        { Token = token }
 
     let targetIdentity (target: TargetDiscovery.Target) = {
         WindowHandle = uint64 target.WindowHandle
@@ -1430,14 +1427,14 @@ module IpcAbi =
     type Session private (
         names: Names,
         mapping: SafeFileHandle,
-        view: nativeint,
-        stopRequest: SafeWaitHandle,
-        stopAcknowledged: SafeWaitHandle) =
+        view: nativeint) =
 
         let mutable disposed = false
 
         member _.Names = names
         member _.IsDisposed = disposed
+        member _.MappingHandle = mapping
+        member _.View = view
 
         member _.Publish(config: Configuration.Config) =
             if disposed then raise (ObjectDisposedException(nameof Session))
@@ -1494,26 +1491,27 @@ module IpcAbi =
             }
 
         member _.RequestStop() =
-            if not (Native.SetEvent(stopRequest)) then raise (win32Error "SetEvent(stop request)")
+            if disposed then raise (ObjectDisposedException(nameof Session))
+            Marshal.WriteInt32(pointer view StopRequestOffset, 1)
 
-        member _.AcknowledgeStopped() =
-            if not (Native.SetEvent(stopAcknowledged)) then raise (win32Error "SetEvent(stop acknowledgement)")
+        member _.SignalStopAck() =
+            if disposed then raise (ObjectDisposedException(nameof Session))
+            Marshal.WriteInt32(pointer view StopAckOffset, 1)
 
         member _.WaitForStopAcknowledgement(timeout: TimeSpan) =
-            let milliseconds =
-                if timeout = Timeout.InfiniteTimeSpan then Infinite
-                elif timeout < TimeSpan.Zero || timeout.TotalMilliseconds > float UInt32.MaxValue then
-                    invalidArg "timeout" "Timeout is outside the Win32 range"
-                else uint32 timeout.TotalMilliseconds
-            Native.WaitForSingleObject(stopAcknowledged, milliseconds) = 0u
+            if disposed then raise (ObjectDisposedException(nameof Session))
+            let deadline = DateTimeOffset.UtcNow + timeout
+            let mutable acked = false
+            while not acked && DateTimeOffset.UtcNow < deadline do
+                acked <- Marshal.ReadInt32(pointer view StopAckOffset) <> 0
+                if not acked then Thread.Sleep(50)
+            acked
 
         interface IDisposable with
             member _.Dispose() =
                 if not disposed then
                     disposed <- true
                     if view <> 0n then Native.UnmapViewOfFile(view) |> ignore
-                    stopAcknowledged.Dispose()
-                    stopRequest.Dispose()
                     mapping.Dispose()
 
         static member Create(identity: TargetIdentity, initialConfig: Configuration.Config) =
@@ -1521,18 +1519,12 @@ module IpcAbi =
             let descriptor, attributesValue = createCurrentUserSecurity()
             let mutable attributes = attributesValue
             try
-                let mapping = Native.CreateFileMappingW(nativeint -1, &attributes, PageReadWrite, 0u, uint32 MappingSize, names.Mapping)
+                let mapping = Native.CreateFileMappingW(nativeint -1, &attributes, PageReadWrite, 0u, uint32 MappingSize, null)
                 if isNull mapping || mapping.IsInvalid then raise (win32Error "CreateFileMappingW")
-                let mutable stopRequest: SafeWaitHandle = null
-                let mutable stopAcknowledged: SafeWaitHandle = null
                 let mutable view = 0n
                 try
                     view <- Native.MapViewOfFile(mapping, FileMapAllAccess, 0u, 0u, unativeint MappingSize)
                     if view = 0n then raise (win32Error "MapViewOfFile")
-                    stopRequest <- Native.CreateEventW(&attributes, true, false, names.StopRequest)
-                    if isNull stopRequest || stopRequest.IsInvalid then raise (win32Error "CreateEventW(stop request)")
-                    stopAcknowledged <- Native.CreateEventW(&attributes, true, false, names.StopAcknowledged)
-                    if isNull stopAcknowledged || stopAcknowledged.IsInvalid then raise (win32Error "CreateEventW(stop acknowledgement)")
 
                     let header = Array.zeroCreate<byte> HeaderSize
                     writeU32 header 0 Magic
@@ -1549,14 +1541,12 @@ module IpcAbi =
                     writeU32 header 104 (uint32 ConfigOffset)
                     writeU32 header 108 (uint32 ConfigSize)
                     Marshal.Copy(header, 0, view, header.Length)
-                    let session = new Session(names, mapping, view, stopRequest, stopAcknowledged)
+                    let session = new Session(names, mapping, view)
                     session.Publish(initialConfig) |> ignore
                     session
                 with
                 | error ->
                     if view <> 0n then Native.UnmapViewOfFile(view) |> ignore
-                    if not (isNull stopAcknowledged) then stopAcknowledged.Dispose()
-                    if not (isNull stopRequest) then stopRequest.Dispose()
                     mapping.Dispose()
                     raise error
             finally
@@ -1569,9 +1559,7 @@ module IpcAbi =
             CreationTimeFileTime = DateTimeOffset.UtcNow.ToFileTime()
         }
         use session = Session.Create(identity, Configuration.defaults)
-        if not (session.Names.Mapping.StartsWith("Local\\WinHelper_", StringComparison.Ordinal)) then
-            Error "Mapping name is not per-run and local"
-        elif session.Names.Token.Length <> 32 then
+        if session.Names.Token.Length <> 32 then
             Error "Run token is not 128 bits"
         else
             match session.TryReadStable() with
@@ -1589,7 +1577,7 @@ module IpcAbi =
                     Error "Lifecycle status round-trip changed values"
                 else
                     session.RequestStop()
-                    session.AcknowledgeStopped()
+                    session.SignalStopAck()
                     if session.WaitForStopAcknowledgement(TimeSpan.FromSeconds(1.0)) then Ok(session.Names, generation)
                     else Error "Stop acknowledgement timed out"
 
@@ -1621,6 +1609,10 @@ module IpcAbi =
             $"LoaderHeartbeatOffset mismatch: F#={LoaderHeartbeatOffset} C=64"
         if LastAcceptedGenerationOffset <> 80 then
             $"LastAcceptedGenerationOffset mismatch: F#={LastAcceptedGenerationOffset} C=80"
+        if StopRequestOffset <> 88 then
+            $"StopRequestOffset mismatch: F#={StopRequestOffset} C=88"
+        if StopAckOffset <> 92 then
+            $"StopAckOffset mismatch: F#={StopAckOffset} C=92"
         if Configuration.Version <> 2u then
             $"ConfigVersion mismatch: F#={Configuration.Version} C=2"
     ]
@@ -1678,10 +1670,10 @@ module ManualMap =
     let private JvmCtxVersion = 1u
 
     [<Literal>]
-    let private JvmCtxSize = 1152
+    let private JvmCtxSize = 392
 
     [<Literal>]
-    let private JvmCtxConfigOffset = 816
+    let private JvmCtxConfigOffset = 56
 
     module private Native =
         [<DllImport("kernel32.dll", SetLastError = true)>]
@@ -1703,6 +1695,15 @@ module ManualMap =
         extern SafeWaitHandle CreateRemoteThread(SafeProcessHandle proc, nativeint attributes, uint32 stackSize, nativeint startAddress, nativeint parameter, uint32 flags, uint32& threadId)
 
         [<DllImport("kernel32.dll", SetLastError = true)>]
+        extern bool GetThreadContext(SafeWaitHandle thread, byte[] context)
+
+        [<DllImport("kernel32.dll", SetLastError = true)>]
+        extern bool SetThreadContext(SafeWaitHandle thread, byte[] context)
+
+        [<DllImport("kernel32.dll", SetLastError = true)>]
+        extern uint32 ResumeThread(SafeWaitHandle thread)
+
+        [<DllImport("kernel32.dll", SetLastError = true)>]
         extern bool FlushInstructionCache(SafeProcessHandle proc, nativeint baseAddress, nativeint size)
 
         [<DllImport("kernel32.dll", SetLastError = true)>]
@@ -1716,6 +1717,19 @@ module ManualMap =
 
         [<DllImport("kernel32.dll", SetLastError = true)>]
         extern bool CloseHandle(nativeint handle)
+
+        [<DllImport("kernel32.dll", SetLastError = true)>]
+        extern bool DuplicateHandle(
+            SafeProcessHandle sourceProcess,
+            SafeHandle sourceHandle,
+            SafeProcessHandle targetProcess,
+            nativeint& targetHandle,
+            uint32 desiredAccess,
+            bool inheritHandle,
+            uint32 options)
+
+        [<DllImport("kernel32.dll")>]
+        extern SafeProcessHandle GetCurrentProcess()
 
     let private win32Error operation =
         let code = Marshal.GetLastWin32Error()
@@ -1829,7 +1843,7 @@ module ManualMap =
                                         i <- i + 1
                                     result
 
-    let private buildContext (remoteBase: nativeint) (imageSize: uint32) (virtualFree: nativeint) (rtlExit: nativeint) (configBytes: byte[]) (mappingName: string) (stopRequestName: string) (stopAckName: string) =
+    let private buildContext (remoteBase: nativeint) (imageSize: uint32) (virtualFree: nativeint) (rtlExit: nativeint) (configBytes: byte[]) (ipcMappingHandle: uint64) =
         let buffer = Array.zeroCreate<byte> JvmCtxSize
         writeU32 buffer 0 JvmCtxMagic
         writeU32 buffer 4 JvmCtxVersion
@@ -1838,16 +1852,11 @@ module ManualMap =
         writeU64 buffer 24 (uint64 imageSize)
         writeU64 buffer 32 (uint64 (int64 virtualFree))
         writeU64 buffer 40 (uint64 (int64 rtlExit))
-        let mappingWide = Encoding.Unicode.GetBytes(mappingName)
-        Array.Copy(mappingWide, 0, buffer, 48, min mappingWide.Length 254)
-        let stopReqWide = Encoding.Unicode.GetBytes(stopRequestName)
-        Array.Copy(stopReqWide, 0, buffer, 304, min stopReqWide.Length 254)
-        let stopAckWide = Encoding.Unicode.GetBytes(stopAckName)
-        Array.Copy(stopAckWide, 0, buffer, 560, min stopAckWide.Length 254)
+        writeU64 buffer 48 ipcMappingHandle
         Array.Copy(configBytes, 0, buffer, JvmCtxConfigOffset, configBytes.Length)
         buffer
 
-    let inject (payloadBytes: byte[]) (processId: uint32) (configBytes: byte[]) (mappingName: string) (stopRequestName: string) (stopAckName: string) =
+    let inject (payloadBytes: byte[]) (processId: uint32) (configBytes: byte[]) (ipcMapping: SafeFileHandle) =
         let access = ProcessVmOperation ||| ProcessVmRead ||| ProcessVmWrite ||| ProcessCreateThread ||| ProcessQueryInformation
         use proc = Native.OpenProcess(access, false, processId)
         if isNull proc || proc.IsInvalid then
@@ -1976,7 +1985,13 @@ module ManualMap =
 
                     Native.FlushInstructionCache(proc, remoteBase, nativeint sizeOfImage) |> ignore
 
-                    let ctxBytes = buildContext remoteBase sizeOfImage vf rt configBytes mappingName stopRequestName stopAckName
+                    (* Duplicate the anonymous IPC mapping handle into the target - no name strings *)
+                    let mutable remoteMappingHandle = 0n
+                    use currentProc = Native.GetCurrentProcess()
+                    if not (Native.DuplicateHandle(currentProc, ipcMapping, proc, &remoteMappingHandle, 0u, false, 0x2u (* DUPLICATE_SAME_ACCESS *))) then
+                        raise (InvalidOperationException(win32Error "DuplicateHandle(IPC mapping)"))
+
+                    let ctxBytes = buildContext remoteBase sizeOfImage vf rt configBytes (uint64 (int64 remoteMappingHandle))
                     remoteCtx <- Native.VirtualAllocEx(proc, 0n, uint64 JvmCtxSize, MemCommit ||| MemReserve, PageReadWrite)
                     if remoteCtx = 0n then raise (InvalidOperationException(win32Error "VirtualAllocEx(context)"))
                     if not (writeRemote proc remoteCtx ctxBytes) then
@@ -1984,9 +1999,23 @@ module ManualMap =
 
                     let entryAddr = IntPtr.Add(remoteBase, int entryRva)
                     let mutable threadId = 0u
-                    let thread = Native.CreateRemoteThread(proc, 0n, 0x400000u, entryAddr, remoteCtx, 0u, &threadId)
+                    (* Create with StartAddress = RtlExitUserThread (legitimate ntdll
+                     * function) and CREATE_SUSPENDED. The ETHREAD records
+                     * StartAddress = RtlExitUserThread, not the DLL entry. *)
+                    let thread = Native.CreateRemoteThread(proc, 0n, 0x400000u, rt, remoteCtx, 0x4u, &threadId)
                     if isNull thread || thread.IsInvalid then
                         raise (InvalidOperationException(win32Error "CreateRemoteThread"))
+                    (* Redirect RCX from RtlExitUserThread to the DLL entry.
+                     * RtlUserThreadStart calls the function in RCX with the
+                     * parameter in RDX (which is already remoteCtx). *)
+                    let ctx = Array.zeroCreate<byte> 1232
+                    writeU32 ctx 0x30 0x100007u  (* ContextFlags = CONTEXT_AMD64 | CONTEXT_FULL *)
+                    if not (Native.GetThreadContext(thread, ctx)) then
+                        raise (InvalidOperationException(win32Error "GetThreadContext"))
+                    writeU64 ctx 0x80 (uint64 (int64 entryAddr))  (* RCX = DLL entry *)
+                    if not (Native.SetThreadContext(thread, ctx)) then
+                        raise (InvalidOperationException(win32Error "SetThreadContext"))
+                    Native.ResumeThread(thread) |> ignore
                     thread.Dispose()
                     Thread.Sleep(500)
                     Ok remoteBase
@@ -2512,14 +2541,14 @@ module WinFormsShell =
                                                 runtimeLabel.Text <- $"IPC: waiting | {session.Names.Token[..7]}"
                                                 validationLabel.Text <- "Initial snapshot published"
                                                 validationLabel.ForeColor <- Color.FromArgb(34, 120, 72)
-                                                appendActivity $"Created secured per-run IPC: {session.Names.Mapping}"
+                                                appendActivity "Created anonymous per-run IPC mapping"
                                                 appendActivity "Injecting payload into target process..."
                                                 let configBytes = IpcAbi.serializeConfig snapshot
-                                                let names = session.Names
                                                 let pid = selectedTarget.ProcessId
-                                                Task.Run((fun () -> ManualMap.inject payloadBytes pid configBytes names.Mapping names.StopRequest names.StopAcknowledged), cancellation.Token)
+                                                Task.Run((fun () -> ManualMap.inject payloadBytes pid configBytes session.MappingHandle), cancellation.Token)
                                                     .ContinueWith(fun (injection: Task<Result<nativeint, string>>) ->
                                                         dispatch (fun () ->
+                                                            Array.Clear(payloadBytes, 0, payloadBytes.Length)
                                                             if injection.IsCanceled || cancellation.IsCancellationRequested then
                                                                 appendActivity "Injection cancelled"
                                                                 disposeSession()
@@ -2617,6 +2646,55 @@ module WinFormsShell =
                 monitor.Stop()
                 monitor.Dispose()
                 hotkeyRunning <- false
+                (* Zero identifying strings in the managed heap before exit.
+                 * .NET interns string literals — they survive after control
+                 * references are nulled. We pin each one and overwrite its
+                 * UTF-16 char data with zeros so a kernel dump of fsi's freed
+                 * physical pages contains no identifying text. *)
+                let zeroString (s: string) =
+                    if not (isNull s) && s.Length > 0 then
+                        try
+                            let gch = Runtime.InteropServices.GCHandle.Alloc(s, Runtime.InteropServices.GCHandleType.Pinned)
+                            try
+                                let ptr = gch.AddrOfPinnedObject()
+                                let charDataPtr = IntPtr.Add(ptr, 12)  (* x64: 8-byte header + 4-byte length *)
+                                for i in 0 .. s.Length - 1 do
+                                    Marshal.WriteInt16(charDataPtr, i * 2, 0s)
+                            finally
+                                gch.Free()
+                        with _ -> ()
+                let rec zeroControlText (c: Control) =
+                    zeroString c.Text
+                    c.Text <- null
+                    for child in c.Controls do
+                        zeroControlText child
+                zeroControlText form
+                zeroString "Left clicker"
+                zeroString "Right clicker"
+                zeroString "Minimum CPS"
+                zeroString "Maximum CPS"
+                zeroString "Hold to click"
+                zeroString "SYSTEM HELPER"
+                zeroString "Managed loader control plane"
+                zeroString "Minecraft target"
+                zeroString "Settings"
+                zeroString "Activity"
+                zeroString "System Helper"
+                zeroString "Refresh targets"
+                zeroString "Verify release"
+                zeroString "Apply settings"
+                zeroString "Stop runtime"
+                zeroString "Waiting for IPC runtime"
+                zeroString "No target selected"
+                zeroString "Idle"
+                zeroString "IPC: offline"
+                zeroString "Select a Minecraft target first"
+                zeroString "Minecraft target"
+                zeroString "      List matching Minecraft windows and validate their process identity"
+                zeroString "No matching Minecraft windows found."
+                GC.Collect(2, GCCollectionMode.Forced, true)
+                GC.WaitForPendingFinalizers()
+                GC.Collect(2, GCCollectionMode.Forced, true)
                 disposeSession()
                 disposeTargets targets
                 targets <- [])
@@ -2748,9 +2826,7 @@ let private run arguments =
                 printfn "  Mapping size:        %d bytes" IpcAbi.MappingSize
                 printfn "  Configuration size:  %d bytes" IpcAbi.ConfigSize
                 printfn "  Stable generation:   %d" generation
-                printfn "  Mapping:             %s" names.Mapping
-                printfn "  Stop request:        %s" names.StopRequest
-                printfn "  Stop acknowledged:   %s" names.StopAcknowledged
+                printfn "  Token:                %s" names.Token
                 0
             | Error message ->
                 eprintfn "IPC self-test failed: %s" message
@@ -2914,15 +2990,13 @@ let private run arguments =
                     let configBytes = IpcAbi.serializeConfig config
                     printfn "Serializing config (%d bytes, version %u)" configBytes.Length config.Version
 
-                    printfn "Creating per-run IPC..."
+                    printfn "Creating per-run IPC (anonymous)..."
                     use session = IpcAbi.Session.Create(IpcAbi.targetIdentity target, config)
                     session.SetLoaderState(IpcAbi.LifecycleState.Starting, 0)
-                    printfn "  Mapping: %s" session.Names.Mapping
-                    printfn "  Stop request: %s" session.Names.StopRequest
-                    printfn "  Stop acknowledged: %s" session.Names.StopAcknowledged
+                    printfn "  Token: %s" session.Names.Token
 
                     printfn "Injecting payload into PID %u..." target.ProcessId
-                    match ManualMap.inject payloadBytes target.ProcessId configBytes session.Names.Mapping session.Names.StopRequest session.Names.StopAcknowledged with
+                    match ManualMap.inject payloadBytes target.ProcessId configBytes session.MappingHandle with
                     | Error message ->
                         eprintfn "Injection failed: %s" message
                         (target :> IDisposable).Dispose()
