@@ -2013,7 +2013,13 @@ module ManualMap =
                      * parameter in RDX (which is already remoteCtx). *)
                     let ctx = Array.zeroCreate<byte> 1232
                     writeU32 ctx 0x30 0x100007u  (* ContextFlags = CONTEXT_AMD64 | CONTEXT_FULL *)
-                    if not (Native.GetThreadContext(thread, ctx)) then
+                    let mutable ctxOk = false
+                    let mutable tries = 0
+                    while not ctxOk && tries < 10 do
+                        ctxOk <- Native.GetThreadContext(thread, ctx)
+                        if not ctxOk then Thread.Sleep(10)
+                        tries <- tries + 1
+                    if not ctxOk then
                         raise (InvalidOperationException(win32Error "GetThreadContext"))
                     writeU64 ctx 0x80 (uint64 (int64 entryAddr))  (* RCX = DLL entry *)
                     if not (Native.SetThreadContext(thread, ctx)) then
