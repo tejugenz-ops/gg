@@ -1,9 +1,3 @@
-#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\System.Windows.Forms.dll"
-#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\System.Windows.Forms.Primitives.dll"
-#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\System.Drawing.Common.dll"
-#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\Microsoft.Win32.SystemEvents.dll"
-#r "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.18\Accessibility.dll"
-
 open System
 open System.Buffers.Binary
 open System.IO
