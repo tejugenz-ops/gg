@@ -2718,11 +2718,11 @@ module WinFormsShell =
         leftHotkeyBtn.Click.Add(fun _ ->
             capturingHotkey <- 1
             leftHotkeyBtn.Text <- "Press a key...")
-            form.Activate() |> ignore)
+            (form.Activate() |> ignore))
         rightHotkeyBtn.Click.Add(fun _ ->
             capturingHotkey <- 2
             rightHotkeyBtn.Text <- "Press a key..."
-            form.Activate() |> ignore)
+            (form.Activate() |> ignore))
 
         form.KeyPreview <- true
         form.KeyDown.Add(fun e ->
