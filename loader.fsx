@@ -133,7 +133,7 @@ module Configuration =
             HoldToClick = true
         }
         RightStartDelayMillis = 200
-        RightUseItemWhitelist = false
+        RightUseItemWhitelist = true
         RightWhitelist = [ "blocks" ]
     }
 
