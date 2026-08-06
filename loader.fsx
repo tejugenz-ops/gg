@@ -2175,7 +2175,7 @@ module WinFormsShell =
         | 0xDC -> "\\"
         | 0xDD -> "]"
         | 0xDE -> "'"
-        | _ -> $"Key0x{k:X2}"
+        | _ -> $"Key0x{vk:X2}"
 
     type private CandidateItem(target: TargetDiscovery.Target) =
         member _.Target = target
