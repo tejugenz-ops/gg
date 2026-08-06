@@ -2717,7 +2717,7 @@ module WinFormsShell =
 
         leftHotkeyBtn.Click.Add(fun _ ->
             capturingHotkey <- 1
-            leftHotkeyBtn.Text <- "Press a key...")
+            leftHotkeyBtn.Text <- "Press a key..."
             (form.Activate() |> ignore))
         rightHotkeyBtn.Click.Add(fun _ ->
             capturingHotkey <- 2
