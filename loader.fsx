@@ -2177,6 +2177,7 @@ module WinFormsShell =
         | 0xDE -> "'"
         | _ -> $"Key0x{vk:X2}"
 
+
     type private CandidateItem(target: TargetDiscovery.Target) =
         member _.Target = target
         override _.ToString() =
