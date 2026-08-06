@@ -2110,6 +2110,73 @@ module WinFormsShell =
     let private VK_SHIFT = 0x10
     let private VK_INSERT = 0x2D
 
+    let private vkName (vk: int) =
+        match vk with
+        | 0 -> "None"
+        | 0x01 -> "LButton"
+        | 0x02 -> "RButton"
+        | 0x04 -> "MMouse"
+        | 0x05 -> "X1Mouse"
+        | 0x06 -> "X2Mouse"
+        | 0x08 -> "Backspace"
+        | 0x09 -> "Tab"
+        | 0x0D -> "Enter"
+        | 0x10 -> "Shift"
+        | 0x11 -> "Ctrl"
+        | 0x12 -> "Alt"
+        | 0x14 -> "CapsLock"
+        | 0x1B -> "Esc"
+        | 0x20 -> "Space"
+        | 0x21 -> "PgUp"
+        | 0x22 -> "PgDn"
+        | 0x23 -> "End"
+        | 0x24 -> "Home"
+        | 0x25 -> "Left"
+        | 0x26 -> "Up"
+        | 0x27 -> "Right"
+        | 0x28 -> "Down"
+        | 0x2D -> "Insert"
+        | 0x2E -> "Delete"
+        | 0x30 | 0x60 -> "0"
+        | 0x31 | 0x61 -> "1"
+        | 0x32 | 0x62 -> "2"
+        | 0x33 | 0x63 -> "3"
+        | 0x34 | 0x64 -> "4"
+        | 0x35 | 0x65 -> "5"
+        | 0x36 | 0x66 -> "6"
+        | 0x37 | 0x67 -> "7"
+        | 0x38 | 0x68 -> "8"
+        | 0x39 | 0x69 -> "9"
+        | k when k >= 0x41 && k <= 0x5A -> string (char k)
+        | 0x70 -> "F1"
+        | 0x71 -> "F2"
+        | 0x72 -> "F3"
+        | 0x73 -> "F4"
+        | 0x74 -> "F5"
+        | 0x75 -> "F6"
+        | 0x76 -> "F7"
+        | 0x77 -> "F8"
+        | 0x78 -> "F9"
+        | 0x79 -> "F10"
+        | 0x7A -> "F11"
+        | 0x7B -> "F12"
+        | 0xA0 -> "LShift"
+        | 0xA1 -> "RShift"
+        | 0xA2 -> "LCtrl"
+        | 0xA3 -> "RCtrl"
+        | 0xBA -> ";"
+        | 0xBB -> "="
+        | 0xBC -> ","
+        | 0xBD -> "-"
+        | 0xBE -> "."
+        | 0xBF -> "/"
+        | 0xC0 -> "`"
+        | 0xDB -> "["
+        | 0xDC -> "\\"
+        | 0xDD -> "]"
+        | 0xDE -> "'"
+        | _ -> $"Key0x{k:X2}"
+
     type private CandidateItem(target: TargetDiscovery.Target) =
         member _.Target = target
         override _.ToString() =
@@ -2267,6 +2334,9 @@ module WinFormsShell =
         addSetting leftGrid "Break min (ms)" breakMinimum
         addSetting leftGrid "Break max (ms)" breakMaximum
         addSetting leftGrid "Tool whitelist" breakWhitelist
+        let leftHotkeyBtn = new Button(Text = "None", Width = 120, FlatStyle = FlatStyle.Flat, BackColor = cCard, ForeColor = cText, Font = fontBodyS)
+        leftHotkeyBtn.FlatAppearance.BorderColor <- cBorder
+        addSetting leftGrid "Toggle hotkey" leftHotkeyBtn
 
         let rightGroup = darkGroupBox "RightClicker settings"
         let rightGrid = settingGrid rightGroup
@@ -2285,6 +2355,9 @@ module WinFormsShell =
         addSetting rightGrid "Start delay (ms)" rightDelay
         addSetting rightGrid "Item whitelist" rightWhitelistEnabled
         addSetting rightGrid "Items (comma sep)" rightWhitelist
+        let rightHotkeyBtn = new Button(Text = "None", Width = 120, FlatStyle = FlatStyle.Flat, BackColor = cCard, ForeColor = cText, Font = fontBodyS)
+        rightHotkeyBtn.FlatAppearance.BorderColor <- cBorder
+        addSetting rightGrid "Toggle hotkey" rightHotkeyBtn
 
         let moduleList = new TableLayoutPanel(Dock = DockStyle.Fill, BackColor = cBg, Padding = System.Windows.Forms.Padding(0, 0, 12, 0), ColumnCount = 1, RowCount = 3)
         moduleList.RowStyles.Add(RowStyle(SizeType.Absolute, 82.0f)) |> ignore
@@ -2638,6 +2711,37 @@ module WinFormsShell =
 
         stopButton.Click.Add(fun _ -> requestShutdown false)
 
+        let mutable leftToggleVk = 0
+        let mutable rightToggleVk = 0
+        let mutable capturingHotkey = 0
+
+        leftHotkeyBtn.Click.Add(fun _ ->
+            capturingHotkey <- 1
+            leftHotkeyBtn.Text <- "Press a key...")
+            form.Activate() |> ignore)
+        rightHotkeyBtn.Click.Add(fun _ ->
+            capturingHotkey <- 2
+            rightHotkeyBtn.Text <- "Press a key..."
+            form.Activate() |> ignore)
+
+        form.KeyPreview <- true
+        form.KeyDown.Add(fun e ->
+            if capturingHotkey <> 0 then
+                e.SuppressKeyPress <- true
+                let vk = int e.KeyCode
+                if vk = 0x1B then
+                    capturingHotkey <- 0
+                    leftHotkeyBtn.Text <- vkName leftToggleVk
+                    rightHotkeyBtn.Text <- vkName rightToggleVk
+                else
+                    if capturingHotkey = 1 then
+                        leftToggleVk <- vk
+                        leftHotkeyBtn.Text <- vkName vk
+                    else
+                        rightToggleVk <- vk
+                        rightHotkeyBtn.Text <- vkName vk
+                    capturingHotkey <- 0)
+
         let settingControls: Control array = [|
             leftEnabled; leftMinimum; leftMaximum; leftMode; leftHold; leftTrigger
             leftBreak; breakMinimum; breakMaximum; breakWhitelist
@@ -2688,6 +2792,8 @@ module WinFormsShell =
 
         let armed = ref true
         let mutable hotkeyRunning = true
+        let leftToggleWasDown = ref false
+        let rightToggleWasDown = ref false
         let comboDown () =
             (ShellNative.GetAsyncKeyState(VK_CONTROL) &&& 0x8000s) <> 0s &&
             (ShellNative.GetAsyncKeyState(VK_SHIFT) &&& 0x8000s) <> 0s &&
@@ -2708,6 +2814,21 @@ module WinFormsShell =
                                     form.Activate())) |> ignore
                     if not isDown then
                         armed := true
+                    if capturingHotkey = 0 then
+                        if leftToggleVk <> 0 then
+                            let lDown = (ShellNative.GetAsyncKeyState(leftToggleVk) &&& 0x8000s) <> 0s
+                            if lDown && not !leftToggleWasDown && not form.IsDisposed && form.IsHandleCreated then
+                                form.BeginInvoke(Action(fun () ->
+                                    if not form.IsDisposed then
+                                        leftEnabled.Checked <- not leftEnabled.Checked)) |> ignore
+                            leftToggleWasDown := lDown
+                        if rightToggleVk <> 0 then
+                            let rDown = (ShellNative.GetAsyncKeyState(rightToggleVk) &&& 0x8000s) <> 0s
+                            if rDown && not !rightToggleWasDown && not form.IsDisposed && form.IsHandleCreated then
+                                form.BeginInvoke(Action(fun () ->
+                                    if not form.IsDisposed then
+                                        rightEnabled.Checked <- not rightEnabled.Checked)) |> ignore
+                            rightToggleWasDown := rDown
                 with _ -> ()
                 Thread.Sleep(25))
         hotkeyThread.IsBackground <- true
