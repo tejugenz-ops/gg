@@ -3058,7 +3058,9 @@ module WinFormsShell =
                                         let newState = not hitFlickEnabled.Checked
                                         hitFlickEnabled.Checked <- newState
                                         if newState then
-                                            leftEnabled.Checked <- false)) |> ignore
+                                            leftEnabled.Checked <- false
+                                        else
+                                            leftEnabled.Checked <- true)) |> ignore
                             flickToggleWasDown := fDown
                         let rsDown = (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s
                         if rsDown && not !rshiftWasDown && not form.IsDisposed && form.IsHandleCreated then
