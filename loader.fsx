@@ -2987,10 +2987,16 @@ module WinFormsShell =
         let SWP_NOSIZE = 0x0001u
         let SWP_SHOWWINDOW = 0x0040u
         overlayTimer.Tick.Add(fun _ ->
-            let shouldShow = overlayEnabled.Checked && !overlayVisible
-            match sessionTarget with
-            | Some target ->
-                if ShellNative.IsWindow(target.WindowHandle) && shouldShow then
+            let mcForeground =
+                match sessionTarget with
+                | Some target ->
+                    ShellNative.IsWindow(target.WindowHandle)
+                        && ShellNative.GetForegroundWindow() = target.WindowHandle
+                | None -> false
+            let shouldShow = overlayEnabled.Checked && !overlayVisible && mcForeground
+            if shouldShow then
+                match sessionTarget with
+                | Some target ->
                     let mutable rect: ShellNative.Rect = { Left = 0; Top = 0; Right = 0; Bottom = 0 }
                     if ShellNative.GetWindowRect(target.WindowHandle, &rect) then
                         if not overlayForm.Visible then
@@ -3004,8 +3010,9 @@ module WinFormsShell =
                             overlayForm.Invalidate()
                         ShellNative.SetWindowPos(overlayForm.Handle, HWND_TOPMOST,
                             0, 0, 0, 0, SWP_NOMOVE ||| SWP_NOSIZE) |> ignore
-            | None -> ()
-            if not shouldShow && overlayForm.Visible then overlayForm.Hide()
+                | None -> ()
+            else
+                if overlayForm.Visible then overlayForm.Hide()
         )
         overlayTimer.Start()
 
