@@ -2411,6 +2411,11 @@ module WinFormsShell =
         let hitFlickHotkeyBtn = new Button(Text = "CapsLock", Width = 120, FlatStyle = FlatStyle.Flat, BackColor = cCard, ForeColor = cText, Font = fontBodyS)
         hitFlickHotkeyBtn.FlatAppearance.BorderColor <- cBorder
         addSetting hitFlickGrid "Toggle hotkey" hitFlickHotkeyBtn
+        let overlayEnabled = new CheckBox(Checked = true)
+        addSetting hitFlickGrid "In-game overlay" overlayEnabled
+        let overlayHotkeyBtn = new Button(Text = "RShift", Width = 120, FlatStyle = FlatStyle.Flat, BackColor = cCard, ForeColor = cText, Font = fontBodyS)
+        overlayHotkeyBtn.FlatAppearance.BorderColor <- cBorder
+        addSetting hitFlickGrid "Overlay hotkey" overlayHotkeyBtn
 
         let moduleList = new TableLayoutPanel(Dock = DockStyle.Fill, BackColor = cBg, Padding = System.Windows.Forms.Padding(0, 0, 12, 0), ColumnCount = 1, RowCount = 4)
         moduleList.RowStyles.Add(RowStyle(SizeType.Absolute, 82.0f)) |> ignore
@@ -2951,22 +2956,25 @@ module WinFormsShell =
 
         let overlayTimer = new System.Windows.Forms.Timer(Interval = 50)
         overlayTimer.Tick.Add(fun _ ->
+            let shouldShow = overlayEnabled.Checked && !overlayVisible
             match sessionTarget with
             | Some target ->
-                if ShellNative.IsWindow(target.WindowHandle) then
+                if ShellNative.IsWindow(target.WindowHandle) && shouldShow then
                     let mutable rect: ShellNative.Rect = { Left = 0; Top = 0; Right = 0; Bottom = 0 }
                     if ShellNative.GetWindowRect(target.WindowHandle, &rect) then
                         let w = rect.Right - rect.Left
                         let h = rect.Bottom - rect.Top
                         if w > 0 && h > 0 then
+                            if not overlayForm.Visible then overlayForm.Show()
                             overlayForm.Location <- Point(rect.Left, rect.Top)
                             overlayForm.Width <- w
                             overlayForm.Height <- h
                             overlayForm.Invalidate()
+                else
+                    if overlayForm.Visible then overlayForm.Hide()
             | None -> ()
         )
         overlayTimer.Start()
-        overlayForm.Show()
 
         let armed = ref true
         let mutable hotkeyRunning = true
