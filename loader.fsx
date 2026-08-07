@@ -999,6 +999,24 @@ module TargetDiscovery =
         [<DllImport("kernel32.dll", SetLastError = true)>]
         extern uint32 WaitForSingleObject(SafeProcessHandle handle, uint32 milliseconds)
 
+        [<Struct>]
+        type Rect = { Left: int; Top: int; Right: int; Bottom: int }
+
+        [<DllImport("user32.dll", SetLastError = true)>]
+        extern bool GetWindowRect(nativeint window, Rect& rect)
+
+        [<DllImport("user32.dll")>]
+        extern nativeint GetForegroundWindow()
+
+        [<DllImport("user32.dll", SetLastError = true)>]
+        extern bool SetWindowPos(nativeint window, nativeint insertAfter, int x, int y, int cx, int cy, uint32 flags)
+
+        [<DllImport("user32.dll", SetLastError = true)>]
+        extern int GetWindowLong(nativeint window, int index)
+
+        [<DllImport("user32.dll", SetLastError = true)>]
+        extern int SetWindowLong(nativeint window, int index, int value)
+
     type ProcessArchitecture =
         | X86
         | X64
@@ -2110,9 +2128,31 @@ module WinFormsShell =
         [<DllImport("user32.dll")>]
         extern int16 GetAsyncKeyState(int virtualKey)
 
+        [<Struct>]
+        type Rect = { Left: int; Top: int; Right: int; Bottom: int }
+
+        [<DllImport("user32.dll", SetLastError = true)>]
+        extern bool GetWindowRect(nativeint window, Rect& rect)
+
+        [<DllImport("user32.dll")>]
+        extern nativeint GetForegroundWindow()
+
+        [<DllImport("user32.dll", SetLastError = true)>]
+        extern bool SetWindowPos(nativeint window, nativeint insertAfter, int x, int y, int cx, int cy, uint32 flags)
+
+        [<DllImport("user32.dll", SetLastError = true)>]
+        extern int GetWindowLong(nativeint window, int index)
+
+        [<DllImport("user32.dll", SetLastError = true)>]
+        extern int SetWindowLong(nativeint window, int index, int value)
+
+        [<DllImport("user32.dll")>]
+        extern bool IsWindow(nativeint window)
+
     let private VK_CONTROL = 0x11
     let private VK_SHIFT = 0x10
     let private VK_INSERT = 0x2D
+    let private VK_RSHIFT = 0xA1
 
     let private vkName (vk: int) =
         match vk with
@@ -2869,11 +2909,71 @@ module WinFormsShell =
             | _ -> ())
         monitor.Start()
 
+        let overlayVisible = ref true
+        let overlayForm = new Form(
+            FormBorderStyle = FormBorderStyle.None,
+            BackColor = Color.Magenta,
+            TransparencyKey = Color.Magenta,
+            TopMost = true,
+            ShowInTaskbar = false,
+            Width = 250,
+            Height = 120,
+            StartPosition = FormStartPosition.Manual,
+            Location = Point(0, 0))
+
+        let GWL_EXSTYLE = -20
+        let WS_EX_LAYERED = 0x80000
+        let WS_EX_TRANSPARENT = 0x20
+        overlayForm.CreateControl() |> ignore
+        let exStyle = ShellNative.GetWindowLong(overlayForm.Handle, GWL_EXSTYLE)
+        ShellNative.SetWindowLong(overlayForm.Handle, GWL_EXSTYLE,
+            exStyle ||| WS_EX_LAYERED ||| WS_EX_TRANSPARENT) |> ignore
+
+        let overlayFont = new System.Drawing.Font("Segoe UI", 10.f, System.Drawing.FontStyle.Bold)
+        overlayForm.Paint.Add(fun e ->
+            let g = e.Graphics
+            g.TextRenderingHint <- System.Drawing.Text.TextRenderingHint.AntiAliasGridFit
+            let modules = System.Collections.Generic.List<string * Color>()
+            if leftEnabled.Checked then modules.Add(("Left Clicker", Color.FromArgb(100, 255, 100)))
+            if rightEnabled.Checked then modules.Add(("Right Clicker", Color.FromArgb(100, 200, 255)))
+            if hitFlickEnabled.Checked then modules.Add(("HitFlick", Color.FromArgb(255, 100, 255)))
+            let mutable y = 4
+            for (name, color) in modules do
+                let textSize = g.MeasureString(name, overlayFont)
+                let w = int textSize.Width + 10
+                let h = int textSize.Height + 4
+                g.FillRectangle(new SolidBrush(Color.FromArgb(140, 20, 20, 20)),
+                    0, y, w, h)
+                g.DrawString(name, overlayFont, new SolidBrush(color),
+                    float32 5, float32 y + 2.f)
+                y <- y + h + 2
+        )
+
+        let overlayTimer = new System.Windows.Forms.Timer(Interval = 50)
+        overlayTimer.Tick.Add(fun _ ->
+            match sessionTarget with
+            | Some target ->
+                if ShellNative.IsWindow(target.WindowHandle) then
+                    let mutable rect = { ShellNative.Rect.Left = 0; Top = 0; Right = 0; Bottom = 0 }
+                    if ShellNative.GetWindowRect(target.WindowHandle, &rect) then
+                        let w = rect.Right - rect.Left
+                        let h = rect.Bottom - rect.Top
+                        if w > 0 && h > 0 then
+                            overlayForm.Location <- Point(rect.Left, rect.Top)
+                            overlayForm.Width <- w
+                            overlayForm.Height <- h
+                            overlayForm.Invalidate()
+            | None -> ()
+        )
+        overlayTimer.Start()
+        overlayForm.Show()
+
         let armed = ref true
         let mutable hotkeyRunning = true
         let leftToggleWasDown = ref false
         let rightToggleWasDown = ref false
         let flickToggleWasDown = ref false
+        let rshiftWasDown = ref false
         let comboDown () =
             (ShellNative.GetAsyncKeyState(VK_CONTROL) &&& 0x8000s) <> 0s &&
             (ShellNative.GetAsyncKeyState(VK_SHIFT) &&& 0x8000s) <> 0s &&
@@ -2916,6 +3016,13 @@ module WinFormsShell =
                                     if not form.IsDisposed then
                                         hitFlickEnabled.Checked <- not hitFlickEnabled.Checked)) |> ignore
                             flickToggleWasDown := fDown
+                        let rsDown = (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s
+                        if rsDown && not !rshiftWasDown && not form.IsDisposed && form.IsHandleCreated then
+                            form.BeginInvoke(Action(fun () ->
+                                if not form.IsDisposed then
+                                    overlayVisible := not !overlayVisible
+                                    if !overlayVisible then overlayForm.Show() else overlayForm.Hide())) |> ignore
+                        rshiftWasDown := rsDown
                 with _ -> ()
                 Thread.Sleep(25))
         hotkeyThread.IsBackground <- true
@@ -2930,6 +3037,10 @@ module WinFormsShell =
                 operation |> Option.iter (fun value -> value.Cancel())
                 monitor.Stop()
                 monitor.Dispose()
+                overlayTimer.Stop()
+                overlayTimer.Dispose()
+                overlayForm.Close()
+                overlayForm.Dispose()
                 hotkeyRunning <- false
                 let zeroString (s: string) =
                     if not (isNull s) && s.Length > 0 then
