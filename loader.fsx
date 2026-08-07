@@ -133,7 +133,7 @@ module Configuration =
             Randomization = RandomizationMode.Extra
             HoldToClick = true
         }
-        RightStartDelayMillis = 200
+        RightStartDelayMillis = 80
         RightUseItemWhitelist = true
         RightWhitelist = [ "blocks" ]
         HitFlickEnabled = false
