@@ -2929,35 +2929,47 @@ module WinFormsShell =
         let GWL_EXSTYLE = -20
         let WS_EX_LAYERED = 0x80000
         let WS_EX_TRANSPARENT = 0x20
+        let WS_EX_NOACTIVATE = 0x08000000
+        let WS_EX_TOOLWINDOW = 0x80
         overlayForm.CreateControl() |> ignore
         let exStyle = ShellNative.GetWindowLong(overlayForm.Handle, GWL_EXSTYLE)
         ShellNative.SetWindowLong(overlayForm.Handle, GWL_EXSTYLE,
-            exStyle ||| WS_EX_LAYERED ||| WS_EX_TRANSPARENT) |> ignore
+            exStyle ||| WS_EX_LAYERED ||| WS_EX_TRANSPARENT ||| WS_EX_NOACTIVATE ||| WS_EX_TOOLWINDOW) |> ignore
 
         let overlayFont = new System.Drawing.Font("Segoe UI", 10.f, System.Drawing.FontStyle.Bold)
-        let lastModuleState = ref ""
+        let hdrFont = new System.Drawing.Font("Segoe UI", 8.f, System.Drawing.FontStyle.Regular)
         overlayForm.Paint.Add(fun e ->
             let g = e.Graphics
             g.TextRenderingHint <- System.Drawing.Text.TextRenderingHint.AntiAliasGridFit
+            let mutable y = 2
+            let mutable maxW = 80
+            use hdrBrush = new SolidBrush(Color.FromArgb(100, 255, 255, 255))
+            g.DrawString("COLD", hdrFont, hdrBrush, float32 5, float32 y)
+            y <- y + 16
             let modules = System.Collections.Generic.List<string * Color>()
             if leftEnabled.Checked then modules.Add(("Left Clicker", Color.FromArgb(100, 255, 100)))
             if rightEnabled.Checked then modules.Add(("Right Clicker", Color.FromArgb(100, 200, 255)))
             if hitFlickEnabled.Checked then modules.Add(("HitFlick", Color.FromArgb(255, 100, 255)))
-            let mutable y = 4
             for (name, color) in modules do
                 let textSize = g.MeasureString(name, overlayFont)
                 let w = int textSize.Width + 10
+                if w > maxW then maxW <- w
                 let h = int textSize.Height + 4
                 use bgBrush = new SolidBrush(Color.FromArgb(140, 20, 20, 20))
                 g.FillRectangle(bgBrush, 0, y, w, h)
                 use textBrush = new SolidBrush(color)
                 g.DrawString(name, overlayFont, textBrush, float32 5, float32 y + 2.f)
                 y <- y + h + 2
+            overlayForm.Width <- maxW
             overlayForm.Height <- y + 4
         )
 
         let overlayTimer = new System.Windows.Forms.Timer(Interval = 100)
         let lastModuleKey = ref ""
+        let HWND_TOPMOST = nativeint -1
+        let SWP_NOMOVE = 0x0002u
+        let SWP_NOSIZE = 0x0001u
+        let SWP_SHOWWINDOW = 0x0040u
         overlayTimer.Tick.Add(fun _ ->
             let shouldShow = overlayEnabled.Checked && !overlayVisible
             match sessionTarget with
@@ -2965,12 +2977,17 @@ module WinFormsShell =
                 if ShellNative.IsWindow(target.WindowHandle) && shouldShow then
                     let mutable rect: ShellNative.Rect = { Left = 0; Top = 0; Right = 0; Bottom = 0 }
                     if ShellNative.GetWindowRect(target.WindowHandle, &rect) then
-                        if not overlayForm.Visible then overlayForm.Show()
+                        if not overlayForm.Visible then
+                            overlayForm.Show()
+                            ShellNative.SetWindowPos(overlayForm.Handle, HWND_TOPMOST,
+                                0, 0, 0, 0, SWP_NOMOVE ||| SWP_NOSIZE ||| SWP_SHOWWINDOW) |> ignore
                         overlayForm.Location <- Point(rect.Left, rect.Top)
                         let modKey = (if leftEnabled.Checked then "L" else "") + (if rightEnabled.Checked then "R" else "") + (if hitFlickEnabled.Checked then "H" else "")
                         if modKey <> !lastModuleKey then
                             lastModuleKey := modKey
                             overlayForm.Invalidate()
+                        ShellNative.SetWindowPos(overlayForm.Handle, HWND_TOPMOST,
+                            0, 0, 0, 0, SWP_NOMOVE ||| SWP_NOSIZE) |> ignore
             | None -> ()
             if not shouldShow && overlayForm.Visible then overlayForm.Hide()
         )
