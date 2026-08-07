@@ -2954,7 +2954,7 @@ module WinFormsShell =
             match sessionTarget with
             | Some target ->
                 if ShellNative.IsWindow(target.WindowHandle) then
-                    let mutable rect = { ShellNative.Rect.Left = 0; Top = 0; Right = 0; Bottom = 0 }
+                    let mutable rect: ShellNative.Rect = { Left = 0; Top = 0; Right = 0; Bottom = 0 }
                     if ShellNative.GetWindowRect(target.WindowHandle, &rect) then
                         let w = rect.Right - rect.Left
                         let h = rect.Bottom - rect.Top
