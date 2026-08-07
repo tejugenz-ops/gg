@@ -2712,21 +2712,65 @@ module WinFormsShell =
                                     targetDetails.Text <- "No Minecraft window found"
                                     setState LoaderState.Idle
                                     finishOperation()
-                                | first :: _ ->
-                                    let errors = TargetDiscovery.revalidate first
-                                    if not errors.IsEmpty then
-                                        let msg = errors |> String.concat "; "
-                                        appendActivity $"Target invalid: {msg}"
-                                        targetDetails.Text <- "Target invalid"
-                                        setState LoaderState.Idle
-                                        finishOperation()
+                                | first :: rest ->
+                                    let validTargets = targets |> List.filter (fun t -> TargetDiscovery.revalidate t |> List.isEmpty)
+                                    if validTargets.Length > 1 then
+                                        let choiceForm = new Form(Text = "Select target", FormBorderStyle = FormBorderStyle.FixedDialog, Width = 500, Height = 200, StartPosition = FormStartPosition.CenterParent, BackColor = Color.FromArgb(39, 39, 42), ForeColor = Color.FromArgb(229, 229, 231))
+                                        let lbl = new Label(Text = "Multiple Minecraft windows detected. Select one:", Dock = DockStyle.Top, Height = 35, TextAlign = ContentAlignment.MiddleLeft, Font = new System.Drawing.Font("Segoe UI", 10.f), Padding = System.Windows.Forms.Padding(8))
+                                        let box = new ComboBox(DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top, Font = new System.Drawing.Font("Segoe UI", 10.f))
+                                        validTargets |> List.iter (fun t ->
+                                            let title = if String.IsNullOrWhiteSpace(t.WindowTitle) then "Minecraft" else t.WindowTitle
+                                            box.Items.Add($"PID {t.ProcessId}  |  {title}") |> ignore)
+                                        let btnPanel = new Panel(Dock = DockStyle.Bottom, Height = 40)
+                                        let okBtn = new Button(Text = "Inject", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(72, 196, 150), ForeColor = Color.FromArgb(39, 39, 42), Dock = DockStyle.Right, Width = 100)
+                                        let cancelBtn = new Button(Text = "Cancel", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(53, 53, 58), ForeColor = Color.FromArgb(229, 229, 231), Dock = DockStyle.Left, Width = 100)
+                                        btnPanel.Controls.Add(cancelBtn)
+                                        btnPanel.Controls.Add(okBtn)
+                                        box.SelectedIndex <- 0
+                                        let selected = ref None
+                                        okBtn.Click.Add(fun _ -> selected := Some validTargets[box.SelectedIndex]; choiceForm.Close())
+                                        cancelBtn.Click.Add(fun _ -> choiceForm.Close())
+                                        choiceForm.Controls.Add(btnPanel)
+                                        choiceForm.Controls.Add(box)
+                                        choiceForm.Controls.Add(lbl)
+                                        choiceForm.ShowDialog(form) |> ignore
+                                        choiceForm.Dispose()
+                                        if selected.Value.IsSome then
+                                            let chosen = selected.Value.Value
+                                            let errors = TargetDiscovery.revalidate chosen
+                                            if not errors.IsEmpty then
+                                                let msg = errors |> String.concat "; "
+                                                appendActivity $"Target invalid: {msg}"
+                                                targetDetails.Text <- "Target invalid"
+                                                setState LoaderState.Idle
+                                                finishOperation()
+                                            else
+                                                let titleText = if String.IsNullOrWhiteSpace(chosen.WindowTitle) then "Minecraft" else chosen.WindowTitle
+                                                targetDetails.Text <- $"PID {chosen.ProcessId}  |  {chosen.Architecture}  |  {titleText}"
+                                                appendActivity $"Target selected: PID {chosen.ProcessId}"
+                                                setState LoaderState.Idle
+                                                finishOperation()
+                                                startInjection chosen
+                                        else
+                                            appendActivity "Target selection cancelled"
+                                            targetDetails.Text <- "Selection cancelled"
+                                            setState LoaderState.Idle
+                                            finishOperation()
                                     else
-                                        let titleText = if String.IsNullOrWhiteSpace(first.WindowTitle) then "Minecraft" else first.WindowTitle
-                                        targetDetails.Text <- $"PID {first.ProcessId}  |  {first.Architecture}  |  {titleText}"
-                                        appendActivity $"Target found: PID {first.ProcessId}"
-                                        setState LoaderState.Idle
-                                        finishOperation()
-                                        startInjection first))
+                                        let errors = TargetDiscovery.revalidate first
+                                        if not errors.IsEmpty then
+                                            let msg = errors |> String.concat "; "
+                                            appendActivity $"Target invalid: {msg}"
+                                            targetDetails.Text <- "Target invalid"
+                                            setState LoaderState.Idle
+                                            finishOperation()
+                                        else
+                                            let titleText = if String.IsNullOrWhiteSpace(first.WindowTitle) then "Minecraft" else first.WindowTitle
+                                            targetDetails.Text <- $"PID {first.ProcessId}  |  {first.Architecture}  |  {titleText}"
+                                            appendActivity $"Target found: PID {first.ProcessId}"
+                                            setState LoaderState.Idle
+                                            finishOperation()
+                                            startInjection first))
                     |> ignore
 
         cancelButton.Click.Add(fun _ ->
