@@ -1222,6 +1222,9 @@ module IpcAbi =
     let private StopAckOffset = 92
 
     [<Literal>]
+    let private FlickFiredOffset = 96
+
+    [<Literal>]
     let private PageReadWrite = 0x04u
 
     [<Literal>]
@@ -1519,6 +1522,14 @@ module IpcAbi =
         member _.SignalStopAck() =
             if disposed then raise (ObjectDisposedException(nameof Session))
             Marshal.WriteInt32(pointer view StopAckOffset, 1)
+
+        member _.ConsumeFlickFired() =
+            if disposed then false
+            else
+                let ptr = pointer view FlickFiredOffset
+                let fired = Marshal.ReadInt32(ptr) <> 0
+                if fired then Marshal.WriteInt32(ptr, 0)
+                fired
 
         member _.WaitForStopAcknowledgement(timeout: TimeSpan) =
             if disposed then raise (ObjectDisposedException(nameof Session))
@@ -2889,6 +2900,11 @@ module WinFormsShell =
                     let status = session.ReadStatus()
                     let targetErrors = TargetDiscovery.revalidate target
                     runtimeLabel.Text <- $"{status.PayloadState} | gen {status.Generation}/{status.LastAcceptedGeneration}"
+                    if session.ConsumeFlickFired() && not form.IsDisposed then
+                        form.BeginInvoke(Action(fun () ->
+                            if not form.IsDisposed then
+                                hitFlickEnabled.Checked <- false
+                                if not leftEnabled.Checked then leftEnabled.Checked <- true)) |> ignore
                     if not targetErrors.IsEmpty && state.State <> LoaderState.Stopping then
                         let message = targetErrors |> String.concat "; "
                         if message <> lastMonitorMessage then
@@ -3039,7 +3055,10 @@ module WinFormsShell =
                             if fDown && not !flickToggleWasDown && not form.IsDisposed && form.IsHandleCreated then
                                 form.BeginInvoke(Action(fun () ->
                                     if not form.IsDisposed then
-                                        hitFlickEnabled.Checked <- not hitFlickEnabled.Checked)) |> ignore
+                                        let newState = not hitFlickEnabled.Checked
+                                        hitFlickEnabled.Checked <- newState
+                                        if newState then
+                                            leftEnabled.Checked <- false)) |> ignore
                             flickToggleWasDown := fDown
                         let rsDown = (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s
                         if rsDown && not !rshiftWasDown && not form.IsDisposed && form.IsHandleCreated then
