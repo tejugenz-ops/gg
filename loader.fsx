@@ -2935,6 +2935,7 @@ module WinFormsShell =
             exStyle ||| WS_EX_LAYERED ||| WS_EX_TRANSPARENT) |> ignore
 
         let overlayFont = new System.Drawing.Font("Segoe UI", 10.f, System.Drawing.FontStyle.Bold)
+        let lastModuleState = ref ""
         overlayForm.Paint.Add(fun e ->
             let g = e.Graphics
             g.TextRenderingHint <- System.Drawing.Text.TextRenderingHint.AntiAliasGridFit
@@ -2947,14 +2948,16 @@ module WinFormsShell =
                 let textSize = g.MeasureString(name, overlayFont)
                 let w = int textSize.Width + 10
                 let h = int textSize.Height + 4
-                g.FillRectangle(new SolidBrush(Color.FromArgb(140, 20, 20, 20)),
-                    0, y, w, h)
-                g.DrawString(name, overlayFont, new SolidBrush(color),
-                    float32 5, float32 y + 2.f)
+                use bgBrush = new SolidBrush(Color.FromArgb(140, 20, 20, 20))
+                g.FillRectangle(bgBrush, 0, y, w, h)
+                use textBrush = new SolidBrush(color)
+                g.DrawString(name, overlayFont, textBrush, float32 5, float32 y + 2.f)
                 y <- y + h + 2
+            overlayForm.Height <- y + 4
         )
 
-        let overlayTimer = new System.Windows.Forms.Timer(Interval = 50)
+        let overlayTimer = new System.Windows.Forms.Timer(Interval = 100)
+        let lastModuleKey = ref ""
         overlayTimer.Tick.Add(fun _ ->
             let shouldShow = overlayEnabled.Checked && !overlayVisible
             match sessionTarget with
@@ -2962,17 +2965,14 @@ module WinFormsShell =
                 if ShellNative.IsWindow(target.WindowHandle) && shouldShow then
                     let mutable rect: ShellNative.Rect = { Left = 0; Top = 0; Right = 0; Bottom = 0 }
                     if ShellNative.GetWindowRect(target.WindowHandle, &rect) then
-                        let w = rect.Right - rect.Left
-                        let h = rect.Bottom - rect.Top
-                        if w > 0 && h > 0 then
-                            if not overlayForm.Visible then overlayForm.Show()
-                            overlayForm.Location <- Point(rect.Left, rect.Top)
-                            overlayForm.Width <- w
-                            overlayForm.Height <- h
+                        if not overlayForm.Visible then overlayForm.Show()
+                        overlayForm.Location <- Point(rect.Left, rect.Top)
+                        let modKey = (if leftEnabled.Checked then "L" else "") + (if rightEnabled.Checked then "R" else "") + (if hitFlickEnabled.Checked then "H" else "")
+                        if modKey <> !lastModuleKey then
+                            lastModuleKey := modKey
                             overlayForm.Invalidate()
-                else
-                    if overlayForm.Visible then overlayForm.Hide()
             | None -> ()
+            if not shouldShow && overlayForm.Visible then overlayForm.Hide()
         )
         overlayTimer.Start()
 
