@@ -76,7 +76,7 @@ module LoaderState =
 
 module Configuration =
     [<Literal>]
-    let Version = 2u
+    let Version = 3u
 
     [<Literal>]
     let MaximumWhitelistEntries = 8
@@ -109,6 +109,7 @@ module Configuration =
         RightStartDelayMillis: int
         RightUseItemWhitelist: bool
         RightWhitelist: string list
+        HitFlickEnabled: bool
     }
 
     let defaults = {
@@ -135,6 +136,7 @@ module Configuration =
         RightStartDelayMillis = 200
         RightUseItemWhitelist = true
         RightWhitelist = [ "blocks" ]
+        HitFlickEnabled = false
     }
 
     let private validateClicker name config = [
@@ -1175,7 +1177,7 @@ module IpcAbi =
     let ConfigOffset = 128
 
     [<Literal>]
-    let ConfigSize = 332
+    let ConfigSize = 336
 
     [<Literal>]
     let private GenerationOffset = 16
@@ -1349,6 +1351,7 @@ module IpcAbi =
         |> List.iteri (fun index item ->
             let encoded = Encoding.UTF8.GetBytes(item)
             Array.Copy(encoded, 0, bytes, 76 + index * 32, encoded.Length))
+        writeI32 bytes 332 (boolValue config.HitFlickEnabled)
         bytes
 
     let deserializeConfig (bytes: byte array) =
@@ -1392,6 +1395,7 @@ module IpcAbi =
             Configuration.RightStartDelayMillis = value 16
             Configuration.RightUseItemWhitelist = value 17 <> 0
             Configuration.RightWhitelist = whitelist
+            Configuration.HitFlickEnabled = readI32 bytes 332 <> 0
         }
         let errors = Configuration.validate config
         if not errors.IsEmpty then
@@ -1595,8 +1599,8 @@ module IpcAbi =
             $"HeaderSize mismatch: F#={HeaderSize} C=128"
         if ConfigOffset <> 128 then
             $"ConfigOffset mismatch: F#={ConfigOffset} C=128"
-        if ConfigSize <> 332 then
-            $"ConfigSize mismatch: F#={ConfigSize} C=332"
+        if ConfigSize <> 336 then
+            $"ConfigSize mismatch: F#={ConfigSize} C=336"
         if GenerationOffset <> 16 then
             $"GenerationOffset mismatch: F#={GenerationOffset} C=16"
         if LoaderStateOffset <> 24 then
@@ -1613,8 +1617,8 @@ module IpcAbi =
             $"StopRequestOffset mismatch: F#={StopRequestOffset} C=88"
         if StopAckOffset <> 92 then
             $"StopAckOffset mismatch: F#={StopAckOffset} C=92"
-        if Configuration.Version <> 2u then
-            $"ConfigVersion mismatch: F#={Configuration.Version} C=2"
+        if Configuration.Version <> 3u then
+            $"ConfigVersion mismatch: F#={Configuration.Version} C=3"
     ]
 
 module ManualMap =
@@ -2360,7 +2364,15 @@ module WinFormsShell =
         rightHotkeyBtn.FlatAppearance.BorderColor <- cBorder
         addSetting rightGrid "Toggle hotkey" rightHotkeyBtn
 
-        let moduleList = new TableLayoutPanel(Dock = DockStyle.Fill, BackColor = cBg, Padding = System.Windows.Forms.Padding(0, 0, 12, 0), ColumnCount = 1, RowCount = 3)
+        let hitFlickGroup = darkGroupBox "HitFlick settings"
+        let hitFlickGrid = settingGrid hitFlickGroup
+        let hitFlickEnabled = new CheckBox(Checked = Configuration.defaults.HitFlickEnabled)
+        addSetting hitFlickGrid "Enabled" hitFlickEnabled
+        let hitFlickHotkeyBtn = new Button(Text = "CapsLock", Width = 120, FlatStyle = FlatStyle.Flat, BackColor = cCard, ForeColor = cText, Font = fontBodyS)
+        hitFlickHotkeyBtn.FlatAppearance.BorderColor <- cBorder
+        addSetting hitFlickGrid "Toggle hotkey" hitFlickHotkeyBtn
+
+        let moduleList = new TableLayoutPanel(Dock = DockStyle.Fill, BackColor = cBg, Padding = System.Windows.Forms.Padding(0, 0, 12, 0), ColumnCount = 1, RowCount = 4)
         moduleList.RowStyles.Add(RowStyle(SizeType.Absolute, 82.0f)) |> ignore
         moduleList.RowStyles.Add(RowStyle(SizeType.Absolute, 82.0f)) |> ignore
         moduleList.RowStyles.Add(RowStyle(SizeType.Percent, 100.0f)) |> ignore
@@ -2391,29 +2403,38 @@ module WinFormsShell =
 
         let leftRow, leftNameLabel, leftSummary = moduleRow "AutoClicker" "12-15 CPS, Extra, hold to click" leftEnabled
         let rightRow, rightNameLabel, rightSummary = moduleRow "RightClicker" "8-11 CPS, Extra, hold to click" rightEnabled
+        let flickRow, flickNameLabel, flickSummary = moduleRow "HitFlick" "Random 45-135 degree KB displacement" hitFlickEnabled
         let settingsPane = new Panel(Dock = DockStyle.Fill, BackColor = cPanel, Padding = System.Windows.Forms.Padding(8))
+        settingsPane.Controls.Add(hitFlickGroup)
         settingsPane.Controls.Add(rightGroup)
         settingsPane.Controls.Add(leftGroup)
         leftGroup.BringToFront()
         rightGroup.Visible <- false
+        hitFlickGroup.Visible <- false
 
-        let selectModule showLeft =
-            leftGroup.Visible <- showLeft
-            rightGroup.Visible <- not showLeft
-            if showLeft then leftGroup.BringToFront() else rightGroup.BringToFront()
-            leftRow.BackColor <- if showLeft then cCardHov else cCard
-            rightRow.BackColor <- if showLeft then cCard else cCardHov
-            leftNameLabel.ForeColor <- if showLeft then cAccent else cText
-            rightNameLabel.ForeColor <- if showLeft then cText else cAccent
+        let selectModule (which: int) =
+            leftGroup.Visible <- (which = 0)
+            rightGroup.Visible <- (which = 1)
+            hitFlickGroup.Visible <- (which = 2)
+            if which = 0 then leftGroup.BringToFront()
+            elif which = 1 then rightGroup.BringToFront()
+            else hitFlickGroup.BringToFront()
+            leftRow.BackColor <- if which = 0 then cCardHov else cCard
+            rightRow.BackColor <- if which = 1 then cCardHov else cCard
+            flickRow.BackColor <- if which = 2 then cCardHov else cCard
+            leftNameLabel.ForeColor <- if which = 0 then cAccent else cText
+            rightNameLabel.ForeColor <- if which = 1 then cAccent else cText
+            flickNameLabel.ForeColor <- if which = 2 then cAccent else cText
 
-        let bindSelect (panel: Panel) (label1: Label) (label2: Label) showLeft =
-            panel.Click.Add(fun _ -> selectModule showLeft)
-            label1.Click.Add(fun _ -> selectModule showLeft)
-            label2.Click.Add(fun _ -> selectModule showLeft)
+        let bindSelect (panel: Panel) (label1: Label) (label2: Label) which =
+            panel.Click.Add(fun _ -> selectModule which)
+            label1.Click.Add(fun _ -> selectModule which)
+            label2.Click.Add(fun _ -> selectModule which)
 
-        bindSelect leftRow leftNameLabel leftSummary true
-        bindSelect rightRow rightNameLabel rightSummary false
-        selectModule true
+        bindSelect leftRow leftNameLabel leftSummary 0
+        bindSelect rightRow rightNameLabel rightSummary 1
+        bindSelect flickRow flickNameLabel flickSummary 2
+        selectModule 0
 
         let updateSummaries () =
             let modeText (box: ComboBox) = if box.SelectedItem = null then "Normal" else string box.SelectedItem
@@ -2437,6 +2458,7 @@ module WinFormsShell =
 
         moduleList.Controls.Add(leftRow, 0, 0)
         moduleList.Controls.Add(rightRow, 0, 1)
+        moduleList.Controls.Add(flickRow, 0, 2)
         settingsRoot.Controls.Add(moduleList, 0, 0)
         settingsRoot.Controls.Add(settingsPane, 1, 0)
 
@@ -2511,6 +2533,7 @@ module WinFormsShell =
                 Configuration.RightStartDelayMillis = int rightDelay.Value
                 Configuration.RightUseItemWhitelist = rightWhitelistEnabled.Checked
                 Configuration.RightWhitelist = whitelist
+                Configuration.HitFlickEnabled = hitFlickEnabled.Checked
             }
             let errors = Configuration.validate snapshot
             if errors.IsEmpty then Ok snapshot else Error errors
@@ -2714,6 +2737,7 @@ module WinFormsShell =
 
         let mutable leftToggleVk = 0
         let mutable rightToggleVk = 0
+        let mutable hitFlickToggleVk = 0x14
         let mutable capturingHotkey = 0
 
         leftHotkeyBtn.Click.Add(fun _ ->
@@ -2723,6 +2747,10 @@ module WinFormsShell =
         rightHotkeyBtn.Click.Add(fun _ ->
             capturingHotkey <- 2
             rightHotkeyBtn.Text <- "Press a key..."
+            (form.Activate() |> ignore))
+        hitFlickHotkeyBtn.Click.Add(fun _ ->
+            capturingHotkey <- 3
+            hitFlickHotkeyBtn.Text <- "Press a key..."
             (form.Activate() |> ignore))
 
         form.KeyPreview <- true
@@ -2734,13 +2762,17 @@ module WinFormsShell =
                     capturingHotkey <- 0
                     leftHotkeyBtn.Text <- vkName leftToggleVk
                     rightHotkeyBtn.Text <- vkName rightToggleVk
+                    hitFlickHotkeyBtn.Text <- vkName hitFlickToggleVk
                 else
                     if capturingHotkey = 1 then
                         leftToggleVk <- vk
                         leftHotkeyBtn.Text <- vkName vk
-                    else
+                    elif capturingHotkey = 2 then
                         rightToggleVk <- vk
                         rightHotkeyBtn.Text <- vkName vk
+                    else
+                        hitFlickToggleVk <- vk
+                        hitFlickHotkeyBtn.Text <- vkName vk
                     capturingHotkey <- 0)
 
         let settingControls: Control array = [|
@@ -2748,6 +2780,7 @@ module WinFormsShell =
             leftBreak; breakMinimum; breakMaximum; breakWhitelist
             rightEnabled; rightMinimum; rightMaximum; rightMode; rightHold
             rightDelay; rightWhitelistEnabled; rightWhitelist
+            hitFlickEnabled
         |]
         settingControls |> Array.iter (fun control ->
             match control with
@@ -2795,6 +2828,7 @@ module WinFormsShell =
         let mutable hotkeyRunning = true
         let leftToggleWasDown = ref false
         let rightToggleWasDown = ref false
+        let flickToggleWasDown = ref false
         let comboDown () =
             (ShellNative.GetAsyncKeyState(VK_CONTROL) &&& 0x8000s) <> 0s &&
             (ShellNative.GetAsyncKeyState(VK_SHIFT) &&& 0x8000s) <> 0s &&
@@ -2830,6 +2864,13 @@ module WinFormsShell =
                                     if not form.IsDisposed then
                                         rightEnabled.Checked <- not rightEnabled.Checked)) |> ignore
                             rightToggleWasDown := rDown
+                        if hitFlickToggleVk <> 0 then
+                            let fDown = (ShellNative.GetAsyncKeyState(hitFlickToggleVk) &&& 0x8000s) <> 0s
+                            if fDown && not !flickToggleWasDown && not form.IsDisposed && form.IsHandleCreated then
+                                form.BeginInvoke(Action(fun () ->
+                                    if not form.IsDisposed then
+                                        hitFlickEnabled.Checked <- not hitFlickEnabled.Checked)) |> ignore
+                            flickToggleWasDown := fDown
                 with _ -> ()
                 Thread.Sleep(25))
         hotkeyThread.IsBackground <- true
