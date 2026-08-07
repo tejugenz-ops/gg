@@ -2466,7 +2466,7 @@ module WinFormsShell =
         let footer = new Panel(Dock = DockStyle.Fill, BackColor = cBg)
         let stateLabel = new Label(Text = "Idle", AutoSize = true, Location = Point(4, 9), Font = fontBodyS, ForeColor = cTextDim)
         let runtimeLabel = new Label(Text = "offline", AutoSize = true, ForeColor = cTextMut, Font = fontBodyS, Location = Point(160, 9))
-        let sdkLabel = new Label(Text = $"v{Loader.Version}", AutoSize = true, ForeColor = cTextMut, Font = fontBodyS, Anchor = (AnchorStyles.Top ||| AnchorStyles.Right))
+        let sdkLabel = new Label(Text = "v1.0", AutoSize = true, ForeColor = cTextMut, Font = fontBodyS, Anchor = (AnchorStyles.Top ||| AnchorStyles.Right))
         footer.Controls.Add(stateLabel)
         footer.Controls.Add(runtimeLabel)
         footer.Controls.Add(sdkLabel)
@@ -2645,6 +2645,7 @@ module WinFormsShell =
                                 | Error message -> failOperation message
                                 | Ok(metadata, image, payloadBytes) ->
                                     appendActivity "Payload verified"
+                                    sdkLabel.Text <- $"V 1.{metadata.PayloadVersion}"
                                     setState LoaderState.PreparingIpc
                                     match buildConfiguration() with
                                     | Error errors -> failOperation (errors |> String.concat "; ")
