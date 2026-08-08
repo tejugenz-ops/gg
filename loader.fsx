@@ -2160,10 +2160,20 @@ module WinFormsShell =
         [<DllImport("user32.dll")>]
         extern bool IsWindow(nativeint window)
 
+        [<DllImport("kernel32.dll")>]
+        extern nativeint GetConsoleWindow()
+
+        [<DllImport("user32.dll")>]
+        extern bool ShowWindow(nativeint window, int command)
+
     let private VK_CONTROL = 0x11
     let private VK_SHIFT = 0x10
     let private VK_INSERT = 0x2D
     let private VK_RSHIFT = 0xA1
+    let private VK_HOME = 0x24
+    let private SW_HIDE = 0
+    let private SW_SHOW = 5
+    let private SW_MINIMIZE = 6
 
     let private vkName (vk: int) =
         match vk with
@@ -2424,7 +2434,7 @@ module WinFormsShell =
         addSetting hitFlickGrid "Toggle hotkey" hitFlickHotkeyBtn
         let overlayEnabled = new CheckBox(Checked = true)
         addSetting hitFlickGrid "In-game overlay" overlayEnabled
-        let overlayHotkeyBtn = new Button(Text = "RShift", Width = 120, FlatStyle = FlatStyle.Flat, BackColor = cCard, ForeColor = cText, Font = fontBodyS)
+        let overlayHotkeyBtn = new Button(Text = "Ctrl+Shift+Home", Width = 120, FlatStyle = FlatStyle.Flat, BackColor = cCard, ForeColor = cText, Font = fontBodyS)
         overlayHotkeyBtn.FlatAppearance.BorderColor <- cBorder
         addSetting hitFlickGrid "Overlay hotkey" overlayHotkeyBtn
 
@@ -3021,11 +3031,15 @@ module WinFormsShell =
         let leftToggleWasDown = ref false
         let rightToggleWasDown = ref false
         let flickToggleWasDown = ref false
-        let rshiftWasDown = ref false
+        let overlayComboWasDown = ref false
         let comboDown () =
             (ShellNative.GetAsyncKeyState(VK_CONTROL) &&& 0x8000s) <> 0s &&
             (ShellNative.GetAsyncKeyState(VK_SHIFT) &&& 0x8000s) <> 0s &&
             (ShellNative.GetAsyncKeyState(VK_INSERT) &&& 0x8000s) <> 0s
+        let overlayComboDown () =
+            (ShellNative.GetAsyncKeyState(VK_CONTROL) &&& 0x8000s) <> 0s &&
+            (ShellNative.GetAsyncKeyState(VK_SHIFT) &&& 0x8000s) <> 0s &&
+            (ShellNative.GetAsyncKeyState(VK_HOME) &&& 0x8000s) <> 0s
         let hotkeyThread = new Thread(fun () ->
             while hotkeyRunning && not form.IsDisposed do
                 try
@@ -3034,12 +3048,15 @@ module WinFormsShell =
                         armed := false
                         form.BeginInvoke(Action(fun () ->
                             if not form.IsDisposed then
+                                let consoleWnd = ShellNative.GetConsoleWindow()
                                 if form.Visible then
                                     form.Hide()
+                                    if consoleWnd <> 0n then ShellNative.ShowWindow(consoleWnd, SW_MINIMIZE) |> ignore
                                 else
                                     form.Show()
                                     form.BringToFront()
-                                    form.Activate())) |> ignore
+                                    form.Activate()
+                                    if consoleWnd <> 0n then ShellNative.ShowWindow(consoleWnd, SW_HIDE) |> ignore))) |> ignore
                     if not isDown then
                         armed := true
                     if capturingHotkey = 0 then
@@ -3069,13 +3086,13 @@ module WinFormsShell =
                                         else
                                             leftEnabled.Checked <- true)) |> ignore
                             flickToggleWasDown := fDown
-                        let rsDown = (ShellNative.GetAsyncKeyState(VK_RSHIFT) &&& 0x8000s) <> 0s
-                        if rsDown && not !rshiftWasDown && not form.IsDisposed && form.IsHandleCreated then
+                        let ocDown = overlayComboDown ()
+                        if ocDown && not !overlayComboWasDown && not form.IsDisposed && form.IsHandleCreated then
                             form.BeginInvoke(Action(fun () ->
                                 if not form.IsDisposed then
                                     overlayVisible := not !overlayVisible
                                     if !overlayVisible then overlayForm.Show() else overlayForm.Hide())) |> ignore
-                        rshiftWasDown := rsDown
+                        overlayComboWasDown := ocDown
                 with _ -> ()
                 Thread.Sleep(25))
         hotkeyThread.IsBackground <- true
