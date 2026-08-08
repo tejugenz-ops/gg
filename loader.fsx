@@ -2775,10 +2775,17 @@ module WinFormsShell =
                                 discovery.Issues |> List.iter (fun issue -> appendActivity $"Issue: {issue}")
                                 match targets with
                                 | [] ->
-                                    appendActivity "No target found"
-                                    targetDetails.Text <- "No Minecraft window found"
+                                    appendActivity "No target found, waiting for Minecraft..."
+                                    targetDetails.Text <- "Waiting for Minecraft..."
                                     setState LoaderState.Idle
                                     finishOperation()
+                                    let retryTimer = new System.Windows.Forms.Timer(Interval = 2000)
+                                    retryTimer.Tick.Add(fun _ ->
+                                        retryTimer.Stop()
+                                        retryTimer.Dispose()
+                                        if state.State = LoaderState.Idle && not form.IsDisposed then
+                                            discoverAndAutoInject())
+                                    retryTimer.Start()
                                 | first :: rest ->
                                     let validTargets = targets |> List.filter (fun t -> TargetDiscovery.revalidate t |> List.isEmpty)
                                     if validTargets.Length > 1 then
