@@ -3056,7 +3056,7 @@ module WinFormsShell =
                                     form.Show()
                                     form.BringToFront()
                                     form.Activate()
-                                    if consoleWnd <> 0n then ShellNative.ShowWindow(consoleWnd, SW_HIDE) |> ignore))) |> ignore
+                                    if consoleWnd <> 0n then ShellNative.ShowWindow(consoleWnd, SW_HIDE) |> ignore)) |> ignore
                     if not isDown then
                         armed := true
                     if capturingHotkey = 0 then
