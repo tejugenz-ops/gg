@@ -2785,7 +2785,7 @@ module WinFormsShell =
                                         retryTimer.Stop()
                                         retryTimer.Dispose()
                                         if state.State = LoaderState.Idle && not form.IsDisposed then
-                                            !discoverAndAutoInject())
+                                            (!discoverAndAutoInject)())
                                     retryTimer.Start()
                                 | first :: rest ->
                                     let validTargets = targets |> List.filter (fun t -> TargetDiscovery.revalidate t |> List.isEmpty)
@@ -3157,7 +3157,7 @@ module WinFormsShell =
         form.Shown.Add(fun _ ->
             form.BringToFront()
             form.Activate()
-            !discoverAndAutoInject())
+            (!discoverAndAutoInject)())
 
         if smokeTest then
             form.CreateControl() |> ignore
