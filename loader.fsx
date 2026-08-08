@@ -2751,7 +2751,8 @@ module WinFormsShell =
                                         with error -> failOperation error.Message))
                     |> ignore
 
-        let discoverAndAutoInject () =
+        let discoverAndAutoInject = ref (fun () -> ())
+        let discoverAndAutoInjectImpl () =
             if state.TryTransition(LoaderState.DiscoveringTarget) then
                 stateLabel.Text <- LoaderState.describe LoaderState.DiscoveringTarget
                 setBusy true
@@ -2784,7 +2785,7 @@ module WinFormsShell =
                                         retryTimer.Stop()
                                         retryTimer.Dispose()
                                         if state.State = LoaderState.Idle && not form.IsDisposed then
-                                            discoverAndAutoInject())
+                                            !discoverAndAutoInject())
                                     retryTimer.Start()
                                 | first :: rest ->
                                     let validTargets = targets |> List.filter (fun t -> TargetDiscovery.revalidate t |> List.isEmpty)
@@ -2846,6 +2847,7 @@ module WinFormsShell =
                                             finishOperation()
                                             startInjection first))
                     |> ignore
+        discoverAndAutoInject := discoverAndAutoInjectImpl
 
         cancelButton.Click.Add(fun _ ->
             operation |> Option.iter (fun value -> value.Cancel())
@@ -3155,7 +3157,7 @@ module WinFormsShell =
         form.Shown.Add(fun _ ->
             form.BringToFront()
             form.Activate()
-            discoverAndAutoInject())
+            !discoverAndAutoInject())
 
         if smokeTest then
             form.CreateControl() |> ignore
